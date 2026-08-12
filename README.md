@@ -41,7 +41,7 @@ A fully-featured terminal client for [chat.deepseek.com](https://chat.deepseek.c
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/abyssal.git
+git clone https://github.com/chickadeeer/abyssal.git
 cd abyssal
 pip install -r requirements.txt
 ```
