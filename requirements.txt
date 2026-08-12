@@ -1,0 +1,6 @@
+prompt_toolkit
+rich
+mcp
+requests
+pyperclip
+pywin32
