@@ -4,3 +4,5 @@ mcp
 requests
 pyperclip
 pywin32
+wasmtime
+numpy
