@@ -1,6 +1,6 @@
 prompt_toolkit
 rich
-mcp
+fastmcp
 requests
 pyperclip
 pywin32
