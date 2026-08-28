@@ -51,7 +51,7 @@ pip install -r requirements.txt
 ```
 prompt_toolkit   # Terminal UI and input handling
 rich             # Styled terminal output
-mcp              # MCP tool server integration
+fastmcp              # MCP tool server integration
 requests         # HTTP requests
 wasmtime
 numpy
