@@ -53,6 +53,8 @@ prompt_toolkit   # Terminal UI and input handling
 rich             # Styled terminal output
 mcp              # MCP tool server integration
 requests         # HTTP requests
+wasmtime
+numpy
 
 # Optional
 pyperclip        # Clipboard support (cross-platform)
