@@ -1,16 +1,14 @@
-from __future__ import annotations
 
+from __future__ import annotations
 import shlex
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
-
 from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
-
 from . import __version__, aps_guide, clipboard, consent
 from .agent import AGENT_SETTINGS_DEFAULTS, SETTING_DESCRIPTIONS
 from .config import (
@@ -43,15 +41,11 @@ try:
 except ImportError:
     from api import DeepSeekError  
 
-
 def _on_off(val: str) -> Optional[bool]:
     v = val.lower()
-    if v in ("on", "1", "true", "yes"):
-        return True
-    if v in ("off", "0", "false", "no"):
-        return False
+    if v in ("on", "1", "true", "yes"): return True
+    if v in ("off", "0", "false", "no"): return False
     return None
-
 
 class CommandsMixin:
     
@@ -79,7 +73,7 @@ class CommandsMixin:
                 ("/notes [list|add <text>|clear]", "Session notes"),
             ]),
             ("Prompts", [
-                ("/prompt show|add|remove|move|edit|tools|clear", "Prompt segments"),
+                ("/prompt show|add|remove|move|edit|tools|clear|stack", "Prompt segments"),
                 ("/prompt save <name> / load <name>", "Prompt library"),
             ]),
             ("MCP & Skills", [
@@ -112,10 +106,11 @@ class CommandsMixin:
             table.add_column("Description")
             for cmd, desc in rows:
                 table.add_row(cmd, desc)
-            console.print(table)
+        console.print(table)
         console.print(
             "[dim]Enter sends · Alt+Enter / Ctrl+J newline · Tab completes "
-            "(2–3 levels)[/]")
+            "(2–3 levels)[/]"
+        )
 
     
     def handle_command(self, raw: str) -> bool:
@@ -136,7 +131,8 @@ class CommandsMixin:
         if head == "/settings":
             console.print(
                 "[info]The interactive settings screen was replaced by flat slash "
-                "commands — everything lives in /help.[/]")
+                "commands — everything lives in /help.[/]"
+            )
             self.cmd_help()
             return True
         if head == "/thinking":
@@ -262,7 +258,8 @@ class CommandsMixin:
             return True
 
         console.print(
-            f"[warning]Unknown command:[/] {escape(cmd)} — try [accent]/help[/].")
+            f"[warning]Unknown command:[/] {escape(cmd)} — try [accent]/help[/]."
+        )
         return True
 
     
@@ -283,13 +280,15 @@ class CommandsMixin:
             self.cfg["model"] = choice
             save_config(self.cfg)
             console.print(f"[success]✓[/] Model set to [accent]{self.model}[/]")
+            return True
         return True
 
     def _cmd_token(self, parts: List[str]) -> bool:
         if len(parts) < 2:
             console.print(
                 f"[dim]Current token: {mask(load_token() or '')} "
-                f"(source: {token_source()})[/]")
+                f"(source: {token_source()})[/]"
+            )
             console.print("[warning]Usage: /token <new-token>[/]")
             return True
         from .config import save_token
@@ -306,11 +305,12 @@ class CommandsMixin:
                 Text(f"type: {pcfg.get('type')}\n"
                      + (f"base_url: {pcfg.get('base_url')}\n" if pcfg.get("base_url") else "")
                      + (f"model: {pcfg.get('model')}\n" if pcfg.get("model") else ""),
-                    style="dim"),
+                     style="dim"),
                 title="[accent]Provider[/]", title_align="left",
                 border_style="#0d9488", padding=(0, 1)))
             console.print(
-                "[dim]/provider deepseek · /provider openai <base_url> <model> [api_key][/dim]")
+                "[dim]/provider deepseek · /provider openai <base_url> <model> [api_key][/dim]"
+            )
             return True
         kind = parts[1].lower()
         if kind == "deepseek":
@@ -322,8 +322,9 @@ class CommandsMixin:
         if kind == "openai":
             if len(parts) < 4:
                 console.print(
-                    "[warning]Usage: /provider openai <base_url> <model> [api_key][/]\n"
-                    "[dim]e.g. /provider openai http://localhost:11434/v1 llama3[/]")
+                    "[warning]Usage: /provider openai <base_url> <model> [api_key]\n"
+                    "[dim]e.g. /provider openai http://localhost:11434/v1 llama3[/]"
+                )
                 return True
             pcfg = {
                 "type": "openai",
@@ -361,7 +362,7 @@ class CommandsMixin:
         self.cfg["autonomy"] = key
         if key != "custom":
             self.agent_settings.update(AUTONOMY_MODES[key].get("toggles", {}))
-        self.cfg["agent_toggles"] = dict(self.agent_settings)
+            self.cfg["agent_toggles"] = dict(self.agent_settings)
         save_config(self.cfg)
         console.print(f"[success]✓[/] Autonomy: [accent]{AUTONOMY_MODES[key]['label']}[/]")
         return True
@@ -399,7 +400,8 @@ class CommandsMixin:
         save_config(self.cfg)
         console.print(
             f"[success]✓[/] [accent]{key}[/] = "
-            f"{'[success]on[/]' if new else '[dim]off[/]'} [dim](autonomy mode → Custom)[/]")
+            f"{'[success]on[/]' if new else '[dim]off[/]'} [dim](autonomy mode → Custom)[/]"
+        )
         return True
 
     
@@ -428,8 +430,7 @@ class CommandsMixin:
         sub = parts[1].lower()
         if sub == "add":
             name = Prompt.ask("Skill name").strip()
-            if not name:
-                return True
+            if not name: return True
             desc = Prompt.ask("One-line description", default="").strip()
             console.print("[dim]Enter content lines — finish with a lone '.'[/]")
             lines: List[str] = []
@@ -438,8 +439,7 @@ class CommandsMixin:
                     line = Prompt.ask("skill│")
                 except (KeyboardInterrupt, EOFError):
                     break
-                if line.strip() == ".":
-                    break
+                if line.strip() == ".": break
                 lines.append(line)
             content = "\n".join(lines).strip()
             if not content:
@@ -498,19 +498,21 @@ class CommandsMixin:
             servers = self.mcp.list_servers()
             console.print(
                 f"[mcp]MCP servers[/]: {len(servers)}   "
-                f"[mcp]tools loaded[/]: {len(self.mcp.tools)}")
+                f"[mcp]tools loaded[/]: {len(self.mcp.tools)}"
+            )
             for name, cfg in servers.items():
                 deps = ", ".join(cfg.get("dependencies") or []) or "none"
                 console.print(
                     f"  [accent]{name}[/] [dim]{cfg.get('command')} "
-                    f"{' '.join(cfg.get('args') or [])}[/] [dim]· deps: {deps}[/]")
+                    f"{' '.join(cfg.get('args') or [])}[/] [dim]· deps: {deps}[/]"
+                )
             for t in self.mcp.tools:
                 console.print(f"  ⚙ [accent]{t['name']}[/] [dim]({t['server']}): "
                               f"{t['description'][:70]}[/]")
             return True
         if sub == "add":
             if len(parts) < 4:
-                console.print("[warning]Usage: /mcp add <name> <command> [args…][/]\n"
+                console.print("[warning]Usage: /mcp add <name> <command> [args…]\n"
                               "[dim]Then optionally: /mcp deps <name> <pkg1,pkg2>[/]")
                 return True
             name = parts[2]
@@ -567,7 +569,8 @@ class CommandsMixin:
             save_config(self.cfg)
             console.print(
                 f"[success]✓[/] Auto-install dependencies: "
-                f"{'[success]on[/] — installs run without asking' if val else '[dim]off[/] — you approve each install'}")
+                f"{'[success]on[/] — installs run without asking' if val else '[dim]off[/] — you approve each install'}"
+            )
             return True
         if len(parts) >= 2 and parts[1].lower() == "check":
             targets = self.mcp.list_servers()
@@ -584,7 +587,8 @@ class CommandsMixin:
             return True
         console.print(
             f"[dim]Auto-install deps: "
-            f"{'on' if self.cfg.get('auto_install_deps') else 'off'}[/]")
+            f"{'on' if self.cfg.get('auto_install_deps') else 'off'}[/]"
+        )
         console.print("[warning]Usage: /deps auto on|off · /deps check [server][/]")
         return True
 
@@ -641,9 +645,9 @@ class CommandsMixin:
                 return
         else:
             sid = self.session_id or ""
-        if not sid:
-            console.print("[error]No session selected.[/]")
-            return
+            if not sid:
+                console.print("[error]No session selected.[/]")
+                return
         if not Confirm.ask(f"Delete session [accent]{sid[:12]}…[/]?", default=False):
             return
         try:
@@ -699,7 +703,8 @@ class CommandsMixin:
         console.print(table)
         console.print(
             f"[dim]Master: {'on' if sc.get('master') else 'off'} — "
-            f"/sounds master on|off · /sound <channel> …[/]")
+            f"/sounds master on|off · /sound <channel> …[/]"
+        )
         return True
 
     def _cmd_sound_channel(self, parts: List[str], cmd: str) -> bool:
@@ -746,6 +751,30 @@ class CommandsMixin:
         sub = parts[1].lower() if len(parts) > 1 else "show"
         segs = self.get_segments()
 
+        if sub == "stack":
+            if not segs:
+                console.print("[dim]No prompt segments to stack.[/]")
+                return True
+            for i, s in enumerate(segs, 1):
+                console.print(f"[accent]{i}[/] {str(s.get('text', ''))[:80]}")
+            sel_str = Prompt.ask("Select segments to combine (e.g. 1,3,5)")
+            indices = []
+            for part in sel_str.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    idx = int(part) - 1
+                    if 0 <= idx < len(segs):
+                        indices.append(idx)
+            if not indices:
+                console.print("[warning]No valid segments selected.[/]")
+                return True
+            combined = "\n".join(str(segs[i].get("text", "")).strip() for i in indices)
+            console.print(Panel(Text(combined[:600] + ("…" if len(combined) > 600 else ""), style="system"), title="[accent]Combined Preview[/]", border_style="#115e59"))
+            if Confirm.ask("Replace active prompt with this combined stack?", default=True):
+                self.save_segments([{"text": combined, "show_tools": True}])
+                console.print("[success]✓[/] Prompt replaced with combined stack.")
+            return True
+
         if sub in ("show", "list"):
             if not segs:
                 console.print("[dim]No prompt segments. /prompt add <text> to create one.[/]")
@@ -758,8 +787,9 @@ class CommandsMixin:
                     title=f"[accent]{i}[/] · {tools}",
                     title_align="left", border_style="#115e59", padding=(0, 1)))
             console.print("[dim]/prompt add|remove <n>|move <n> up|down|edit <n> <text>|"
-                          "tools <n> on|off|clear|save <name>|load <name>[/]")
+                          "tools <n> on|off|clear|save <name>|load <name>|stack[/]")
             return True
+
         if sub == "add":
             text = cmd.partition("add")[2].strip()
             if not text:
@@ -769,10 +799,13 @@ class CommandsMixin:
             self.save_segments(segs)
             console.print(f"[success]✓[/] Segment {len(segs)} added")
             return True
+
         if sub == "clear":
             self.save_segments([])
-            console.print("[success]✓[/] All prompt segments cleared")
+            self.session_notes = []
+            console.print("[success]✓[/] All prompt segments and session context cleared.")
             return True
+
         if sub == "save":
             if len(parts) < 3:
                 console.print("[warning]Usage: /prompt save <name>[/]")
@@ -784,6 +817,7 @@ class CommandsMixin:
             (PROMPTS_DIR / f"{parts[2]}.txt").write_text(joined, encoding="utf-8")
             console.print(f"[success]✓[/] Saved prompt library entry [accent]{parts[2]}[/]")
             return True
+
         if sub == "load":
             if len(parts) < 3:
                 console.print("[warning]Usage: /prompt load <name>[/]")
@@ -843,7 +877,8 @@ class CommandsMixin:
                 console.print(f"[success]✓[/] Segment {idx + 1} MCP tool visibility: "
                               f"{'[success]on[/]' if val else '[dim]off[/]'}")
                 return True
-        console.print("[warning]Usage: /prompt show|add|remove|move|edit|tools|clear|save|load[/]")
+
+        console.print("[warning]Usage: /prompt show|add|remove|move|edit|tools|clear|save|load|stack[/]")
         return True
 
     

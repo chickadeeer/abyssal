@@ -1,5 +1,5 @@
-from __future__ import annotations
 
+from __future__ import annotations
 import json
 import os
 import sys
@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 
 APP_NAME = "Abyssal"
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.0.1"
 
 
 
@@ -44,6 +44,7 @@ MODELS: Dict[str, str] = {
     "expert":  "DeepSeek-V4 Pro — deep reasoning but no search",
     "vision":  "DeepSeek-VL2 — multimodal / image input / no search",
 }
+
 DEFAULT_SOUNDS: Dict[str, Any] = {
     "master": True,
     "notify":   {"enabled": True, "preset": "abyss-chime", "file": ""},
@@ -51,16 +52,19 @@ DEFAULT_SOUNDS: Dict[str, Any] = {
     "blank":    {"enabled": True, "preset": "deep-ping",   "file": ""},
 }
 
+
 _FIRST_RUN_SOUNDS: Dict[str, Any] = {**DEFAULT_SOUNDS, "master": False}
 
 DEFAULT_VISUAL: Dict[str, Any] = {
     "tool_calls": "tab",
+    "codeblocks": "normal",
     "thinking": "panel",
     "search": "inline",
     "accent": "#0d9488",
     "border": "rounded",
     "timestamps": "off",
     "flash": 2.5,
+    "show_tool_stream": "on",
 }
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -164,7 +168,6 @@ def ensure_dirs() -> None:
     SKILLS_DIR.mkdir(exist_ok=True)
     APS_BACKUP_DIR.mkdir(exist_ok=True)
 
-
 def load_config() -> Dict[str, Any]:
     ensure_dirs()
     if CONFIG_FILE.exists():
@@ -185,12 +188,10 @@ def load_config() -> Dict[str, Any]:
             pass
     return json.loads(json.dumps(DEFAULT_CONFIG))
 
-
 def save_config(cfg: Dict[str, Any]) -> None:
     ensure_dirs()
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
-
 
 def _default_mcp_config() -> Dict[str, Any]:
     
@@ -205,7 +206,6 @@ def _default_mcp_config() -> Dict[str, Any]:
         }
     }
 
-
 def load_mcp_config() -> Dict[str, Any]:
     ensure_dirs()
     if MCP_CONFIG_FILE.exists():
@@ -218,12 +218,10 @@ def load_mcp_config() -> Dict[str, Any]:
     save_mcp_config(cfg)
     return cfg
 
-
 def save_mcp_config(cfg: Dict[str, Any]) -> None:
     ensure_dirs()
     with open(MCP_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
-
 
 
 
@@ -243,7 +241,6 @@ def _parse_env_file(path: Path) -> Dict[str, str]:
         pass
     return out
 
-
 def load_token() -> Optional[str]:
     for key in ("ABYSSAL_TOKEN", "DEEPSEEK_TOKEN"):
         tok = os.environ.get(key)
@@ -256,7 +253,6 @@ def load_token() -> Optional[str]:
             if tok:
                 return tok
     return None
-
 
 def token_source() -> str:
     for key in ("ABYSSAL_TOKEN", "DEEPSEEK_TOKEN"):
@@ -276,7 +272,6 @@ def token_source() -> str:
             return f"{OLD_ENV_FILE}:{key}"
     return "none"
 
-
 def save_token(token: str) -> Path:
     ensure_dirs()
     lines: list[str] = []
@@ -295,17 +290,14 @@ def save_token(token: str) -> Path:
     os.environ["ABYSSAL_TOKEN"] = token
     return ENV_FILE
 
-
 def mask(token: str) -> str:
     return token[:8] + "…" + token[-4:] if len(token) > 16 else "****"
 
 
 
 
-
 def transcript_path(session_id: str) -> Path:
     return CONV_DIR / f"{session_id}.json"
-
 
 def all_local_transcripts() -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}

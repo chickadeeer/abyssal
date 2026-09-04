@@ -310,8 +310,10 @@ class ChatMixin:
             time.sleep(seconds)
 
     
-    def _stream_once(self, prompt: str, ref_file_ids: Optional[List[str]] = None) -> Optional[str]:
+    def _stream_once(self, prompt: str, ref_file_ids: Optional[List[str]] = None, start_time: Optional[float] = None) -> Optional[str]:
         
+        if start_time is None:
+            start_time = time.time()
         vis = self.visual()
         thinking_buf: List[str] = []
         answer_buf: List[str] = []
@@ -347,10 +349,13 @@ class ChatMixin:
                     parts.append(line)
             if answer_buf:
                 display_answer = strip_model_control_blocks("".join(answer_buf))
+                elapsed = time.time() - start_time
                 parts.append(Panel(
                     codeblocks.render_group(display_answer, console=console,
-                                            accent=vis.get("accent", "#0d9488")),
-                    title=self._title("[accent]Abyssal[/]"),
+                                            accent=vis.get("accent", "#0d9488"),
+                                            show_stream_ui=vis.get("show_tool_stream", "on") == "on",
+                                            vis=vis),
+                    title=self._title(f"[accent]Abyssal[/] [dim]({elapsed:.1f}s)[/]"),
                     title_align="left", border_style="#0d9488",
                     box=self._box(), padding=(0, 1),
                 ))
@@ -474,6 +479,9 @@ class ChatMixin:
             return
         self._cancelled = False
         codeblocks.stop_click_listener()
+        codeblocks.CODE_BLOCKS.clear_all()
+
+        start_time = time.time()
 
         prompt_to_send = self.build_final_prompt(user_prompt)
         prompt_to_send = self._maybe_attach_tools_reminder(prompt_to_send)
@@ -493,7 +501,7 @@ class ChatMixin:
         file_ids = self.pending_file_ids[:]
         if file_ids:
             console.print(f"[info]Attaching {len(file_ids)} uploaded file(s) to this request.[/]")
-        answer = self._stream_once(prompt_to_send, ref_file_ids=file_ids or None)
+        answer = self._stream_once(prompt_to_send, ref_file_ids=file_ids or None, start_time=start_time)
         if answer is not None:
             consumed = set(file_ids)
             self.pending_file_ids = [
@@ -691,7 +699,7 @@ class ChatMixin:
                 console.print(
                     f"[info]Attaching {len(next_file_ids)} uploaded file(s) to the next request.[/]"
                 )
-            answer = self._stream_once(prompt_next, ref_file_ids=next_file_ids or None)
+            answer = self._stream_once(prompt_next, ref_file_ids=next_file_ids or None, start_time=start_time)
             if answer is not None:
                 consumed = set(next_file_ids)
                 self.pending_file_ids = [

@@ -1,22 +1,41 @@
 # Abyssal
 
-> **The Most Unique Terminal Client.**
+> **The Most Unique DeepSeek Client.**
 
 A terminal client for [chat.deepseek.com](https://chat.deepseek.com) that uses a reverse-engineered web API. No official API key needed — Abyssal talks to DeepSeek the same way the web app does. Works with DeepSeek V4, V4 Pro, and VL2.
 
 ---
 
+## What's New in 3.0.1
+
+Nothing flashy here — just a bunch of stuff that makes the day‑to‑day feel less janky.
+
+**Clipboard just works now.** The old code was a mess of platform‑specific hacks that broke in weird ways. I ripped it out and replaced it with `pyperclip`. The file went from 120 lines to 14. Same functionality, way less to go wrong.
+
+**Code blocks got a glow‑up.** The system now spots `[TOOL_CALL]` blocks alongside regular code fences. If something's still streaming in, you'll see a timer and a spinner instead of just a blank panel. There's also a compact display mode if you want to save screen space. And yes — when you copy a block multiple times, you'll get increasingly absurd labels like "Copied thrice!" and "Copied fortice‑once!" because I thought it was funny.
+
+**Prompt stacking.** You can now combine multiple prompt segments with `/prompt stack`. Pick the ones you want, they get merged into one. Also, `/prompt clear` now wipes session notes too — one less command to remember.
+
+**Update checks now show you what changed.** Before you decide to update, you'll see the changelog right in the terminal. No more "something's available, go look it up yourself."
+
+**Two new visual toggles.** `codeblocks` (normal/compact) and `show_tool_stream` (on/off) give you a bit more control over how things look.
+
+**Known issue:** Click-to-copy on code blocks doesn't work reliably in 3.0.1. I'm aware of it — terminal mouse handling is finicky across different environments. Use `/cc <block#>` as a workaround.
+
+The 3.0.0 release was the big one — this is just polish. But the polish matters.
+
+---
+
 ## What's New in 3.0.0
 
-Version 3.0.0 is a major overhaul. Here's the short version:
+Version 3.0.0 was a major overhaul. Here's the short version:
 
 - **APS overhaul** — the proposal system got a complete redesign
 - **Consent system** — you control what the model can do, feature by feature
-- **Scraping improvements** — you get responses faster now
 - **Provider system** — modular architecture for AI models
 - **Plugin system** — built-in plugin management with LobeHub Skills
 - **Clipboard support** — copy/paste works properly now
-- **Code blocks** — better syntax highlighting (except codeblocks don't get copied)
+- **Code blocks** — better syntax highlighting
 - **Updater** — automatic updates
 - **Dependency management** — resolves packages automatically
 - **Stricter security** — models propose, you approve
@@ -201,7 +220,7 @@ You can approve, decline, or defer.
 
 ## LobeHub Skills Marketplace
 
-3.00 integrates with LobeHub Skills Marketplace — over 100,000 reusable skills.
+3.0.0 integrates with LobeHub Skills Marketplace — over 100,000 reusable skills.
 
 ### Search for Skills
 

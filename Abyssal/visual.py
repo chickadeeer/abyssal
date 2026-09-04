@@ -1,30 +1,32 @@
 
-from __future__ import annotations
 
+from __future__ import annotations
 from typing import Any, Dict
 
 DEFAULT_VISUAL: Dict[str, Any] = {
     "tool_calls": "tab",       
+    "codeblocks": "normal",    
     "thinking": "panel",       
     "search": "inline",        
     "accent": "#0d9488",       
     "border": "rounded",       
     "timestamps": "off",       
     "flash": 2.5,              
+    "show_tool_stream": "on",  
 }
 
 CHOICES: Dict[str, list] = {
-    "tool_calls": ["tab", "inline", "raw", "hidden"],
+    "tool_calls": ["tab", "inline", "raw", "hidden", "compact"],
+    "codeblocks": ["normal", "compact"],
     "thinking": ["panel", "inline", "hidden"],
     "search": ["inline", "panel", "hidden"],
     "border": ["rounded", "square"],
     "timestamps": ["off", "time", "datetime"],
+    "show_tool_stream": ["on", "off"],
 }
-
 
 def get_visual(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return {**DEFAULT_VISUAL, **(cfg.get("visual") or {})}
-
 
 def validate(key: str, value: str):
     
