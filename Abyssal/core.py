@@ -1,131 +1,400 @@
 from __future__ import annotations
-_I='session_id'
-_H='parent_message_id'
-_G='messages'
-_F='#115e59'
-_E='system_prompt'
-_D='updated_at'
-_C='title'
-_B=None
-_A=False
+
+import asyncio
 import json
 from datetime import datetime
-from typing import Any,Dict,List,Optional
+from typing import Any, Dict, List, Optional
+
 from prompt_toolkit.key_binding import KeyBindings
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
-from.agent import AGENT_SETTINGS_DEFAULTS
-from.client import DeepSeekClient,DeepSeekError
-from.config import AUTONOMY_MODES,MCP_HELP_INTERVAL,MODELS,all_local_transcripts,load_config,load_token,mask,save_config,save_token,token_source,transcript_path
-from.cowork import load_tasks,vault_root
-from.mcp import MCPManager
-from.skills import list_skills,skills_summary_block
-from.ui import console,print_banner
+
+from .agent import AGENT_SETTINGS_DEFAULTS
+from .config import (
+    AUTONOMY_MODES,
+    MCP_HELP_INTERVAL,
+    MODELS,
+    all_local_transcripts,
+    load_config,
+    load_token,
+    mask,
+    save_config,
+    save_token,
+    token_source,
+    transcript_path,
+)
+from .cowork import load_tasks, vault_root
+from .mcp import MCPManager
+from .providers import make_provider
+from .skills import list_skills, skills_summary_block
+from .ui import apply_visual_theme, console, print_banner
+from .visual import get_visual
+from . import aps_guide, consent
+
+try:
+    from dsk.api import AuthenticationError, DeepSeekError
+except ImportError:
+    from api import AuthenticationError, DeepSeekError  
+
+
 class BaseCLI:
-	def __init__(A,token=_B,debug=_A,model=_B,resume_session=_B):
-		D='enter';C='human-needed';B=token;A.cfg=load_config();A.debug=debug or A.cfg.get('debug',_A);A.model=model or A.cfg.get('model','default');A.thinking_enabled=A.cfg.get('thinking',_A);A.search_enabled=A.cfg.get('search',_A);A.system_prompt=A.cfg.get(_E,'');A.active_prompt_name=A.cfg.get('active_prompt_name','');A.client=_B;A.session_id=_B;A.session_title='';A.parent_message_id=_B;A.messages=[];A._session_index=[];A._resume_target=resume_session;A._cancelled=_A;A._next_prompt_default='';A.mcp=MCPManager();A.taskman=_B;A._next_tools_reminder_at=MCP_HELP_INTERVAL;A.autonomy_mode=A.cfg.get('autonomy',C)
-		if A.autonomy_mode not in AUTONOMY_MODES:A.autonomy_mode=C
-		A.agent_settings=dict(AGENT_SETTINGS_DEFAULTS);A.agent_settings.update(A.cfg.get('agent_toggles',{}));E=AUTONOMY_MODES[A.autonomy_mode]
-		if A.autonomy_mode!='custom':A.agent_settings.update(E.get('toggles',{}))
-		A.session_notes=[];A._mcp_rejected_plugins=set();A._exit_requested=_A;A.pending_file_ids=[];A.uploaded_files=[]
-		if B:save_token(B.strip())
-		A.kb=KeyBindings()
-		@A.kb.add('c-j')
-		@A.kb.add('escape',D)
-		def F(event):event.app.current_buffer.insert_text('\n')
-		@A.kb.add(D)
-		def G(event):event.app.current_buffer.validate_and_handle()
-		@A.kb.add('c-v')
-		def H(event):
-			C=event
-			try:import win32clipboard as A;A.OpenClipboard();B=A.GetClipboardData();A.CloseClipboard();C.app.current_buffer.insert_text(B)
-			except Exception:
-				try:import pyperclip as D;B=D.paste();C.app.current_buffer.insert_text(B)
-				except Exception:pass
-		A.prompt_session=_B
-	def print_banner(A):print_banner()
-	def status_line(A):
-		K='status';J='[success]on[/]';F='[dim]off[/]';B=[f"[accent]session[/]: {A.session_id[:8]}…"if A.session_id else'[dim]no session[/]',f"[accent]model[/]: {A.model}",f"[accent]thinking[/]: {J if A.thinking_enabled else F}",f"[search]web[/]: {J if A.search_enabled else F}"];L=AUTONOMY_MODES.get(A.autonomy_mode,{});B.append(f"[dim]auto: {L.get("label",A.autonomy_mode)}[/]")
-		if A.mcp.tools:B.append(f"[mcp]mcp[/]: {len(A.mcp.tools)} tools")
-		G=len(list_skills())
-		if G:B.append(f"[dim]skills: {G}[/]")
-		if A.pending_file_ids:B.append(f"[accent]files[/]: {len(A.pending_file_ids)} pending")
-		if A.active_prompt_name:B.append(f"[system]prompt[/]: {A.active_prompt_name}")
-		elif A.system_prompt:B.append('[system]prompt[/]: custom')
-		if A.session_notes:B.append(f"[dim]notes: {len(A.session_notes)}[/]")
-		H=load_tasks();C=sum(1 for A in H if A.get(K)=='pending');D=sum(1 for A in H if A.get(K)=='running')
-		if C>0 or D>0:
-			E=[]
-			if C>0:E.append(f"{C} pending")
-			if D>0:E.append(f"{D} running")
-			B.append(f"[warning]{", ".join(E)} tasks[/]")
-		I=vault_root()
-		if I:B.append(f"[dim]vault: {I}[/]")
-		B.append(f"debug: {"[warning]on[/]"if A.debug else F}");return Text.from_markup('  │  '.join(B))
-	def print_status(A):console.print(Rule(A.status_line(),style=_F))
-	def authenticate(B):
-		for E in range(3):
-			A=load_token()
-			if not A:
-				console.print('[info]No ABYSSAL_TOKEN / DEEPSEEK_TOKEN found in env or .env files.[/]');A=Prompt.ask('[accent]Paste your Abyssal auth token[/]').strip()
-				if not A:console.print('[error]A token is required.[/]');continue
-				C=save_token(A);console.print(f"[success]✓[/] Token saved to [accent]{C}[/] (mode 600)")
-			D=DeepSeekClient(A,debug=B.debug);B.client=D;console.print(f"[success]✓[/] Authenticated  [dim](source: {token_source()}, {mask(A)})[/]");return True
-		return _A
-	def new_session(A,quiet=_A):
-		if not A.client:return _A
-		with console.status('[accent]Creating session…[/]',spinner='dots'):
-			try:A.session_id=A.client.create_session()
-			except DeepSeekError as B:console.print(f"[error]Failed to create session: {B}[/]");return _A
-		A.parent_message_id=_B;A.messages.clear();A.session_title='';A._next_tools_reminder_at=MCP_HELP_INTERVAL;A.session_notes=[];A._mcp_rejected_plugins=set()
-		if not quiet:console.print(f"[success]✓[/] New session [accent]{A.session_id[:12]}…[/]")
-		return True
-	def _apply_session(A,session_id):B=session_id;A.session_id=B;C=json.loads(transcript_path(B).read_text(encoding='utf-8'))if transcript_path(B).exists()else{};A.messages=C.get(_G,[]);A.parent_message_id=C.get(_H);A.session_title=C.get(_C,'');A._next_tools_reminder_at=len(A.messages)+MCP_HELP_INTERVAL;A.session_notes=[];A._mcp_rejected_plugins=set()
-	def _save_transcript(A):
-		if not A.session_id:return
-		B={_I:A.session_id,_C:A.session_title,'model':A.model,_E:A.system_prompt,_H:A.parent_message_id,_G:A.messages,_D:datetime.now().isoformat()}
-		try:transcript_path(A.session_id).write_text(json.dumps(B,indent=2,ensure_ascii=_A),encoding='utf-8')
-		except OSError:pass
-	def cmd_sessions(G):
-		L='dim';I='updated';F='id'
-		if not G.client:return
-		with console.status('[accent]Fetching sessions…[/]',spinner='dots'):
-			try:M=G.client.list_sessions()
-			except DeepSeekError as N:console.print(f"[error]Could not list sessions: {N}[/]");return
-		O=all_local_transcripts();B=Table(title='Chat Sessions',border_style=_F,header_style='bold #0d9488');B.add_column('#',style=L,width=4);B.add_column('ID',style='accent');B.add_column('Title');B.add_column('Updated',style=L);B.add_column('',width=2);C,J=[],set()
-		for D in M:
-			E=str(D.get(F)or D.get(_I)or'')
-			if not E:continue
-			J.add(E);C.append({F:E,_C:D.get(_C)or D.get('name')or'',I:D.get(_D)or D.get('create_time')or''})
-		for(E,K)in O.items():
-			if E not in J:C.append({F:E,_C:K.get(_C,'')+' [dim](local only)[/]',I:K.get(_D,'')})
-		C.sort(key=lambda r:str(r[I]),reverse=True);G._session_index=[A[F]for A in C]
-		if not C:console.print('[dim]No sessions yet. Type a message to start one.[/]');return
-		for(P,H)in enumerate(C,1):
-			A=H[I]
-			if isinstance(A,(int,float)):A=datetime.fromtimestamp(A/1000 if A>1e12 else A).strftime('%Y-%m-%d %H:%M')
-			elif isinstance(A,str)and A:A=A[:16].replace('T',' ')
-			Q='[success]●[/]'if H[F]==G.session_id else'';B.add_row(str(P),H[F][:16]+'…',H[_C][:48]or'[dim]untitled[/]',str(A),Q)
-		console.print(B);console.print('[dim]Resume / rename / delete from /settings → Sessions[/]')
-	def _agent_protocol_block(B):
-		D='allow-mcp-proposals';E=B.agent_settings;C=AUTONOMY_MODES.get(B.autonomy_mode,{})
-		def A(key):return'ENABLED'if E.get(key)else'disabled'
-		return'\n'.join(['# AGENT CONTROL PROTOCOL','You are running inside Abyssal. The human user controls your capabilities from the /settings screen; you can never change these settings yourself.','',f"AUTONOMY MODE: {C.get("label",B.autonomy_mode)} — {C.get("desc","")}",'','HARD LIMITS (always in force, no exceptions):','- You can NEVER message, prompt, or reply to yourself, and you can never act as the user.','- You can NOT switch models mid-conversation. If a different model is needed, the user must start a new session (/new) — all current context will be lost.','- You can never run /settings, /retry, /edit, or /paste.','',f"Model-initiated slash commands: {A("model-commands")}. When enabled, you may request any existing CLI slash command by outputting exactly:",'[COMMAND: /some-command arguments]','[/COMMAND]','One command per block, then wait for its [COMMAND_RESULT]. Depending on the autonomy mode, privileged or destructive commands may require explicit user confirmation. /notes add <text> stores a session-scoped note (wiped on /new).','',f"MCP plugin proposals: {A(D)}. Propose a brand-new MCP plugin server with a JSON block. YOU MUST USE THE OFFICIAL MCP SDK IMPORT: `from mcp.server.fastmcp import FastMCP`. Do NOT use `from fastmcp import FastMCP`. The 'code' field is a JSON string — escape newlines as \\n so multi-line Python works. The script MUST end with `if __name__ == \"__main__\": mcp.run()`. If you omit `mcp.run()` or use the wrong import, the server will crash with 'Connection closed'.",'[MCP_PROPOSAL]','{"name": "plugin_name", "reason": "why this helps", "code": "from mcp.server.fastmcp import FastMCP\\n\\nmcp = FastMCP(\\"MyPlugin\\")\\n\\n@mcp.tool()\\ndef my_tool(arg: str) -> str:\\n    return arg\\n\\nif __name__ == \\"__main__\\":\\n    mcp.run()"}','[/MCP_PROPOSAL]','',f"MCP plugin edits: {A(D)}. WORK SURGICALLY: first call the mcp_read_plugin tool to see the full numbered source, then send a MINIMAL unified diff in the 'patch' field — only rewrite the whole file in 'code' for tiny plugins. The user sees the resulting diff and approves it:",'[MCP_EDIT_PROPOSAL]','{"name": "existing_plugin_name", "reason": "why this edit is needed", "patch": "@@ -12,7 +12,7 @@\\n context line\\n-old line\\n+new line"}','[/MCP_EDIT_PROPOSAL]','',f"System-prompt proposals: {A("allow-system-proposals")}. JSON block:",'[SYSTEM_PROPOSAL]','{"reason": "why", "prompt": "the full proposed system prompt"}','[/SYSTEM_PROPOSAL]','',f"Structured questions: {A("allow-model-questions")}. Ask several questions at once; mark each blocking (must answer) or optional (has a default, can be skipped). Blocking questions surface first. Answers come back as 'Question N: answer' lines.",'[QUESTIONS]','{"questions": [{"text": "Which style?", "choices": ["dark", "light"], "blocking": true}, {"text": "Site title?", "allow_text": true, "blocking": false, "default": "My Site"}]}','[/QUESTIONS]','','SKILLS: reusable knowledge you or the user wrote. Call skills_list / skill_read BEFORE a matching task (e.g. read a frontend-design skill before building a webpage). Write skills with skill_write {"name", "content", "description", "note"} — especially AFTER finishing a task where a skill would have helped: write it now so it exists next time. Skills are versioned: skill_diff compares versions and skill_rollback reverts if a newer version made things worse.','',f"Human-input pause: {A("allow-model-pause")}. To suspend the loop and ask the user:",'[NEEDS_INPUT] your clear question or decision request [/NEEDS_INPUT]','',f"New-session request: {A("allow-model-new")}. A clean slate loses ALL context:",'[NEW_SESSION] reason [/NEW_SESSION]'])
-	def build_final_prompt(A,user_prompt):
-		C=user_prompt
-		if A.parent_message_id is _B and not A.messages:
-			B=[]
-			if A.system_prompt:B.append(A.system_prompt.strip())
-			B.append(A._agent_protocol_block());D=A.mcp.get_short_block()
-			if D:B.append(D)
-			E=skills_summary_block()
-			if E:B.append(E)
-			if B:return f"<system>\n"+'\n'.join(B)+f"\n</system>\n{C}"
-		return C
-	def _maybe_attach_tools_reminder(A,prompt):
-		B=prompt
-		if len(A.messages)>=A._next_tools_reminder_at:A._next_tools_reminder_at=len(A.messages)+MCP_HELP_INTERVAL;console.print(f"[mcp]ⓘ Re-injecting MCP tool reference (every {MCP_HELP_INTERVAL} messages)[/]");return B+'\n<tools_reminder>\n'+A.mcp.get_help_block()+'\n</tools_reminder>'
-		return B
+    
+
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        debug: bool = False,
+        model: Optional[str] = None,
+        resume_session: Optional[str] = None,
+    ):
+        self.cfg = load_config()
+        self.debug = debug or self.cfg.get("debug", False)
+        self.model = model or self.cfg.get("model", "default")
+        self.thinking_enabled = self.cfg.get("thinking", False)
+        self.search_enabled = self.cfg.get("search", False)
+        self.provider = None
+        self.session_id: Optional[str] = None
+        self.session_title: str = ""
+        self.parent_message_id: Optional[int] = None
+        self.messages: List[Dict[str, Any]] = []
+        self._session_index: List[str] = []
+        self._resume_target = resume_session
+        self._cancelled = False
+        self._next_prompt_default = ""
+        self.mcp = MCPManager()
+        self.taskman = None
+        self._next_tools_reminder_at = MCP_HELP_INTERVAL
+
+        
+        self.autonomy_mode = self.cfg.get("autonomy", "human-needed")
+        if self.autonomy_mode not in AUTONOMY_MODES:
+            self.autonomy_mode = "human-needed"
+        self.agent_settings: Dict[str, bool] = dict(AGENT_SETTINGS_DEFAULTS)
+        self.agent_settings.update(self.cfg.get("agent_toggles", {}))
+        preset = AUTONOMY_MODES[self.autonomy_mode]
+        if self.autonomy_mode != "custom":
+            self.agent_settings.update(preset.get("toggles", {}))
+        self.session_notes: List[str] = []
+        self._mcp_rejected_plugins: set = set()
+        self._exit_requested = False
+
+        
+        self._mcp_loop = asyncio.new_event_loop()
+
+        
+        self.pending_file_ids: List[str] = []
+        self.uploaded_files: List[Dict[str, Any]] = []
+
+        
+        aps_guide.ensure_guide()
+        consent.load_consent()
+        apply_visual_theme(self.cfg)
+
+        if token:
+            save_token(token.strip())
+
+        self.kb = KeyBindings()
+
+        @self.kb.add("c-j")
+        @self.kb.add("escape", "enter")
+        def _newline(event):
+            event.app.current_buffer.insert_text("\n")
+
+        @self.kb.add("enter")
+        def _submit(event):
+            event.app.current_buffer.validate_and_handle()
+
+        @self.kb.add("c-v")
+        def _paste(event):
+            try:
+                from . import clipboard
+                data = clipboard.paste()
+                if data:
+                    event.app.current_buffer.insert_text(data)
+            except Exception:
+                pass
+
+        self.prompt_session = None
+
+    
+    def visual(self) -> Dict[str, Any]:
+        return get_visual(self.cfg)
+
+    
+    def get_segments(self) -> List[Dict[str, Any]]:
+        segs = self.cfg.get("prompt_segments")
+        if not isinstance(segs, list):
+            return []
+        return [s for s in segs if isinstance(s, dict)]
+
+    def save_segments(self, segs: List[Dict[str, Any]]) -> None:
+        self.cfg["prompt_segments"] = segs
+        save_config(self.cfg)
+
+    @property
+    def system_prompt(self) -> str:
+        
+        return "\n\n".join(
+            str(s.get("text", "")).strip() for s in self.get_segments()
+            if str(s.get("text", "")).strip()
+        ).strip()
+
+    
+    def print_banner(self) -> None:
+        print_banner()
+
+    def status_line(self) -> Text:
+        parts = [
+            f"[accent]session[/]: {self.session_id[:8]}…" if self.session_id else "[dim]no session[/]",
+            f"[accent]provider[/]: {getattr(self.provider, 'name', '—') if self.provider else '—'}",
+            f"[accent]model[/]: {self.model}",
+            f"[accent]thinking[/]: {'[success]on[/]' if self.thinking_enabled else '[dim]off[/]'}",
+            f"[search]web[/]: {'[success]on[/]' if self.search_enabled else '[dim]off[/]'}",
+        ]
+        mode = AUTONOMY_MODES.get(self.autonomy_mode, {})
+        parts.append(f"[dim]auto: {mode.get('label', self.autonomy_mode)}[/]")
+        if self.mcp.tools:
+            parts.append(f"[mcp]mcp[/]: {len(self.mcp.tools)} tools")
+        n_skills = len(list_skills())
+        if n_skills:
+            parts.append(f"[dim]skills: {n_skills}[/]")
+        if self.pending_file_ids:
+            parts.append(f"[accent]files[/]: {len(self.pending_file_ids)} pending")
+        n_segs = len(self.get_segments())
+        if n_segs:
+            parts.append(f"[system]prompt[/]: {n_segs} segment(s)")
+        if self.session_notes:
+            parts.append(f"[dim]notes: {len(self.session_notes)}[/]")
+        tasks = load_tasks()
+        pending = sum(1 for t in tasks if t.get("status") == "pending")
+        running = sum(1 for t in tasks if t.get("status") == "running")
+        if pending > 0 or running > 0:
+            task_str = []
+            if pending > 0:
+                task_str.append(f"{pending} pending")
+            if running > 0:
+                task_str.append(f"{running} running")
+            parts.append(f"[warning]{', '.join(task_str)} tasks[/]")
+        v_root = vault_root()
+        if v_root:
+            parts.append(f"[dim]vault: {v_root}[/]")
+        parts.append(f"debug: {'[warning]on[/]' if self.debug else '[dim]off[/]'}")
+        return Text.from_markup("  │  ".join(parts))
+
+    def print_status(self) -> None:
+        console.print(Rule(self.status_line(), style="#115e59"))
+
+    
+    def authenticate(self) -> bool:
+        ptype = (self.cfg.get("provider") or {}).get("type", "deepseek")
+        if ptype == "openai":
+            provider = make_provider(self.cfg, debug=self.debug)
+            try:
+                with console.status("[accent]Verifying local endpoint…[/]", spinner="dots"):
+                    provider.verify()
+            except Exception as e:
+                console.print(f"[error]Provider check failed: {e}[/]")
+                console.print("[dim]Fix it with /provider openai <base_url> <model> [api_key][/dim]")
+                return False
+            self.provider = provider
+            pcfg = self.cfg.get("provider", {})
+            console.print(
+                f"[success]✓[/] Connected to OpenAI-compatible endpoint "
+                f"[accent]{pcfg.get('base_url')}[/] · model [accent]{pcfg.get('model')}[/]")
+            return True
+        
+        for _ in range(3):
+            token = load_token()
+            if not token:
+                console.print("[info]No ABYSSAL_TOKEN / DEEPSEEK_TOKEN found in env or .env files.[/]")
+                token = Prompt.ask("[accent]Paste your Abyssal auth token[/]").strip()
+                if not token:
+                    console.print("[error]A token is required.[/]")
+                    continue
+                path = save_token(token)
+                console.print(f"[success]✓[/] Token saved to [accent]{path}[/] (mode 600)")
+            provider = make_provider(self.cfg, token=token, debug=self.debug)
+            self.provider = provider
+            console.print(
+                f"[success]✓[/] Authenticated  [dim](source: {token_source()}, {mask(token or '')})[/]"
+            )
+            return True
+        return False
+
+    
+    def new_session(self, quiet: bool = False) -> bool:
+        if not self.provider:
+            return False
+        with console.status("[accent]Creating session…[/]", spinner="dots"):
+            try:
+                self.session_id = self.provider.create_session()
+            except DeepSeekError as e:
+                console.print(f"[error]Failed to create session: {e}[/]")
+                return False
+            except Exception as e:
+                console.print(f"[error]Failed to create session: {e}[/]")
+                return False
+        self.parent_message_id = None
+        self.messages.clear()
+        self.session_title = ""
+        self._next_tools_reminder_at = MCP_HELP_INTERVAL
+        self.session_notes = []
+        self._mcp_rejected_plugins = set()
+        if not quiet:
+            console.print(f"[success]✓[/] New session [accent]{self.session_id[:12]}…[/]")
+        return True
+
+    def _apply_session(self, session_id: str) -> None:
+        self.session_id = session_id
+        t = json.loads(transcript_path(session_id).read_text(encoding="utf-8")) \
+            if transcript_path(session_id).exists() else {}
+        self.messages = t.get("messages", [])
+        self.parent_message_id = t.get("parent_message_id")
+        self.session_title = t.get("title", "")
+        self._next_tools_reminder_at = len(self.messages) + MCP_HELP_INTERVAL
+        self.session_notes = []
+        self._mcp_rejected_plugins = set()
+
+    def _save_transcript(self) -> None:
+        if not self.session_id:
+            return
+        data = {
+            "session_id": self.session_id,
+            "title": self.session_title,
+            "model": self.model,
+            "system_prompt": self.system_prompt,
+            "parent_message_id": self.parent_message_id,
+            "messages": self.messages,
+            "updated_at": datetime.now().isoformat(),
+        }
+        try:
+            transcript_path(self.session_id).write_text(
+                json.dumps(data, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def cmd_sessions(self) -> None:
+        if not self.provider:
+            return
+        with console.status("[accent]Fetching sessions…[/]", spinner="dots"):
+            try:
+                remote = self.provider.list_sessions()
+            except Exception as e:
+                console.print(f"[error]Could not list sessions: {e}[/]")
+                return
+        local = all_local_transcripts()
+        table = Table(
+            title="Chat Sessions",
+            border_style="#115e59",
+            header_style="bold #0d9488",
+        )
+        table.add_column("#", style="dim", width=4)
+        table.add_column("ID", style="accent")
+        table.add_column("Title")
+        table.add_column("Updated", style="dim")
+        table.add_column("", width=2)
+        rows, seen = [], set()
+        for s in remote:
+            sid = str(s.get("id") or s.get("session_id") or "")
+            if not sid:
+                continue
+            seen.add(sid)
+            rows.append({
+                "id": sid,
+                "title": s.get("title") or s.get("name") or "",
+                "updated": s.get("updated_at") or s.get("create_time") or "",
+            })
+        for sid, t in local.items():
+            if sid not in seen:
+                rows.append({
+                    "id": sid,
+                    "title": t.get("title", "") + " [dim](local only)[/]",
+                    "updated": t.get("updated_at", ""),
+                })
+        rows.sort(key=lambda r: str(r["updated"]), reverse=True)
+        self._session_index = [r["id"] for r in rows]
+        if not rows:
+            console.print("[dim]No sessions yet. Type a message to start one.[/]")
+            return
+        for i, r in enumerate(rows, 1):
+            ts = r["updated"]
+            if isinstance(ts, (int, float)):
+                ts = datetime.fromtimestamp(ts / 1000 if ts > 1e12 else ts).strftime("%Y-%m-%d %H:%M")
+            elif isinstance(ts, str) and ts:
+                ts = ts[:16].replace("T", " ")
+            marker = "[success]●[/]" if r["id"] == self.session_id else ""
+            table.add_row(
+                str(i),
+                r["id"][:16] + "…",
+                r["title"][:48] or "[dim]untitled[/]",
+                str(ts),
+                marker,
+            )
+        console.print(table)
+        console.print("[dim]Resume: /use <#> · Rename: /rename <title> · Delete: /del <#>[/]")
+
+    
+    def _aps_block(self) -> str:
+        s = self.agent_settings
+        mode = AUTONOMY_MODES.get(self.autonomy_mode, {})
+
+        def state(key: str) -> str:
+            return "ENABLED" if s.get(key) else "disabled"
+
+        header = "\n".join([
+            "# ABYSSAL PROPOSAL SYSTEM (APS) — RUNTIME STATE",
+            f"AUTONOMY MODE: {mode.get('label', self.autonomy_mode)} — {mode.get('desc', '')}",
+            "",
+            "APS feature states (controlled by the human via /agent and /autonomy):",
+            f"- confirm every tool call: {state('confirm-tools')}",
+            f"- proposals need approval: {state('confirm-proposals')}",
+            f"- MCP plugin proposals: {state('allow-mcp-proposals')}",
+            f"- system-prompt proposals: {state('allow-system-proposals')}",
+            f"- new-session requests: {state('allow-model-new')}",
+            f"- human-input pauses: {state('allow-model-pause')}",
+            f"- structured question forms: {state('allow-model-questions')}",
+            "",
+            "Any feature that also requires one-time user consent will be "
+            "blocked with an explanation until the human grants it.",
+        ])
+        footer = "\n".join([
+            "All MCP servers run in ephemeral mode: the process is launched, "
+            "the tool runs, then the process is torn down immediately.",
+        ])
+        return f"{header}\n\n{aps_guide.load_guide()}\n\n{footer}"
+
+    
+    def build_final_prompt(self, user_prompt: str) -> str:
+        
+        if self.parent_message_id is None and not self.messages:
+            blocks: List[str] = []
+            segs = self.get_segments()
+            for seg in segs:
+                text = str(seg.get("text", "")).strip()
+                if text:
+                    blocks.append(text)
+            blocks.append(self._aps_block())
+            show_tools = any(bool(s.get("show_tools", True)) for s in segs) if segs else True
+            if show_tools:
+                short = self.mcp.get_short_block()
+                if short:
+                    blocks.append(short)
+            skills = skills_summary_block()
+            if skills:
+                blocks.append(skills)
+            if blocks:
+                return "<system>\n" + "\n\n".join(blocks) + f"\n</system>\n{user_prompt}"
+        return user_prompt
+
+    def _maybe_attach_tools_reminder(self, prompt: str) -> str:
+        
+        if len(self.messages) >= self._next_tools_reminder_at:
+            self._next_tools_reminder_at = len(self.messages) + MCP_HELP_INTERVAL
+            console.print(f"[mcp]ⓘ Re-injecting MCP tool reference (every {MCP_HELP_INTERVAL} messages)[/]")
+            return prompt + "\n<tools_reminder>\n" + self.mcp.get_help_block() + "\n</tools_reminder>"
+        return prompt

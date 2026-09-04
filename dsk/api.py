@@ -1,186 +1,858 @@
-_X='action'
-_W='search_enabled'
-_V='thinking_enabled'
-_U='ref_file_ids'
-_T='prompt'
-_S='chat_session_id'
-_R='default'
-_Q='Invalid challenge response format'
-_P='challenge'
-_O='target_path'
-_N='/chat/create_pow_challenge'
-_M='API rate limit exceeded'
-_L='content-type'
-_K='disabled'
-_J='status'
-_I='POST'
-_H='Invalid or expired authentication token'
-_G='x-ds-pow-response'
-_F='authorization'
-_E='utf-8'
-_D='biz_data'
-_C='data'
-_B=False
-_A=None
-import json,logging
-from pathlib import Path
+import json
+import logging
+import mimetypes
 import threading
-from typing import Any,Dict,Generator,List,Literal,Optional
+import time
+from pathlib import Path
+from typing import Any, Dict, Generator, List, Literal, Optional
+
 import requests
-from.pow import DeepSeekPOW
-ThinkingMode=Literal['detailed','simple',_K]
-SearchMode=Literal['enabled',_K]
-class DeepSeekError(Exception):0
-class AuthenticationError(DeepSeekError):0
-class RateLimitError(DeepSeekError):0
-class NetworkError(DeepSeekError):0
-class CloudflareError(DeepSeekError):0
+from requests.adapters import HTTPAdapter
+
+try:
+    from urllib3.util.retry import Retry
+except Exception:
+    Retry = None
+
+try:
+    import orjson
+except Exception:
+    orjson = None
+
+from .pow import DeepSeekPOW
+
+
+ThinkingMode = Literal["detailed", "simple", "disabled"]
+SearchMode = Literal["enabled", "disabled"]
+
+
+class DeepSeekError(Exception):
+    pass
+
+
+class AuthenticationError(DeepSeekError):
+    pass
+
+
+class RateLimitError(DeepSeekError):
+    pass
+
+
+class NetworkError(DeepSeekError):
+    pass
+
+
+class CloudflareError(DeepSeekError):
+    pass
+
+
 class APIError(DeepSeekError):
-	def __init__(A,message,status_code=_A):super().__init__(message);A.status_code=status_code
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class POWCache:
-	def __init__(A,api):A.api=api;A._lock=threading.Lock();A._cached=_A;A._thread=_A
-	def _compute(A):
-		try:
-			B=A.api._get_pow_challenge();C=A.api.pow_solver.solve_challenge(B)
-			with A._lock:A._cached=C
-		except Exception:
-			with A._lock:A._cached=_A
-	def get(A):
-		with A._lock:B=A._cached;A._cached=_A
-		if B is _A:C=A.api._get_pow_challenge();B=A.api.pow_solver.solve_challenge(C)
-		A._thread=threading.Thread(target=A._compute,daemon=True);A._thread.start();return B
+    
+
+    def __init__(self, api: "DeepSeekAPI"):
+        self.api = api
+        self._lock = threading.Lock()
+        self._cached: Optional[str] = None
+        self._expires: float = 0.0
+        self._computing: bool = False
+
+    def warm(self) -> None:
+        self._ensure_background()
+
+    def _now(self) -> float:
+        return time.time()
+
+    def _normalize_expiry(self, expire_at: Any) -> float:
+        
+        now = self._now()
+
+        if expire_at is None:
+            return now + 30.0
+
+        try:
+            ts = float(expire_at)
+        except Exception:
+            return now + 30.0
+
+        if ts <= 0:
+            return now + 30.0
+
+        
+        if ts > 10_000_000_000.0:
+            ts /= 1000.0
+
+        
+        if ts < 1_000_000_000.0:
+            return now + ts
+
+        return ts
+
+    def _ensure_background(self) -> None:
+        with self._lock:
+            if self._computing:
+                return
+
+            
+            if self._cached is not None and self._expires - self._now() > 2.0:
+                return
+
+            self._computing = True
+
+        threading.Thread(target=self._compute, daemon=True).start()
+
+    def _compute(self) -> None:
+        try:
+            challenge = self.api._get_pow_challenge()
+            result = self.api.pow_solver.solve_challenge(challenge)
+            expires = self._normalize_expiry(challenge.get("expire_at"))
+
+            with self._lock:
+                self._cached = result
+                self._expires = expires
+        except Exception:
+            with self._lock:
+                self._cached = None
+                self._expires = 0.0
+        finally:
+            with self._lock:
+                self._computing = False
+
+    def get(self) -> str:
+        
+        now = self._now()
+
+        with self._lock:
+            cached = self._cached
+            expires = self._expires
+
+            if cached is not None and expires - now > 1.5:
+                
+                self._cached = None
+                self._expires = 0.0
+            else:
+                cached = None
+
+        if cached is None:
+            
+            challenge = self.api._get_pow_challenge()
+            cached = self.api.pow_solver.solve_challenge(challenge)
+
+        
+        self._ensure_background()
+
+        return cached
+
+
 class DeepSeekAPI:
-	BASE_URL='https://chat.deepseek.com/api/v0'
-	def __init__(A,auth_token,debug=_B):
-		B=auth_token
-		if not B or not isinstance(B,str):raise AuthenticationError('Invalid auth token provided')
-		A.auth_token=B;A.pow_solver=DeepSeekPOW();A.pow_cache=POWCache(A);A.debug=debug;A.logger=_A
-		if A.debug:A._setup_logger()
-		A.cookies={};C=Path(__file__).parent/'cookies.json'
-		try:
-			with open(C,'r',encoding=_E)as D:E=json.load(D);A.cookies=E.get('cookies',{})
-		except(FileNotFoundError,json.JSONDecodeError):pass
-	def _setup_logger(A):
-		A.logger=logging.getLogger('DeepSeekAPI');A.logger.setLevel(logging.DEBUG);A.logger.propagate=_B
-		if not A.logger.handlers:B=logging.FileHandler('debug.txt',mode='a',encoding=_E);C=logging.Formatter('%(asctime)s | %(levelname)-7s | %(message)s',datefmt='%Y-%m-%d %H:%M:%S');B.setFormatter(C);A.logger.addHandler(B)
-		A.logger.debug('='*60);A.logger.debug('DeepSeekAPI logger started (debug=True)')
-	def _log(A,message):
-		if A.debug and A.logger:A.logger.debug(message)
-	def _safe_headers(B,headers):
-		A=headers.copy()
-		if _F in A:A[_F]='Bearer [REDACTED]'
-		if _G in A:A[_G]='[REDACTED]'
-		return A
-	def _get_headers(C,pow_response=_A):
-		A=pow_response;B={'accept':'*/*','accept-language':'en-US,en;q=0.9',_F:f"Bearer {C.auth_token}",_L:'application/json','origin':'https://chat.deepseek.com','referer':'https://chat.deepseek.com/','user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36','x-client-bundle-id':'com.deepseek.chat','x-client-locale':'en_US','x-client-platform':'web','x-client-version':'2.3.0','x-client-timezone-offset':'-14400'}
-		if A:B[_G]=A
-		return B
-	def _make_request(B,method,endpoint,json_data):
-		D=json_data;C=method;E=f"{B.BASE_URL}{endpoint}";F=B._get_headers();B._log(f"REQUEST  {C} {E}");B._log(f"HEADERS  {json.dumps(B._safe_headers(F),indent=2)}");B._log(f"BODY     {json.dumps(D,indent=2,ensure_ascii=_B)}")
-		try:
-			A=requests.request(method=C,url=E,headers=F,json=D,cookies=B.cookies,timeout=30);B._log(f"RESPONSE status={A.status_code}")
-			try:H=A.json();B._log(f"BODY     {json.dumps(H,indent=2,ensure_ascii=_B)}")
-			except Exception:B._log(f"BODY     {A.text[:2000]}")
-			if A.status_code==401:raise AuthenticationError(_H)
-			elif A.status_code==429:raise RateLimitError(_M)
-			elif A.status_code>=500:raise APIError(f"Server error: {A.text}",A.status_code)
-			elif A.status_code!=200:raise APIError(f"Request failed: {A.text}",A.status_code)
-			return A.json()
-		except requests.exceptions.RequestException as G:B._log(f"NETWORK ERROR: {G}");raise NetworkError(f"Network error: {str(G)}")
-	def _get_pow_challenge(A):
-		try:B=A._make_request(_I,_N,{_O:'/api/v0/chat/completion'});return B[_C][_D][_P]
-		except KeyError:raise APIError(_Q)
-	def _get_pow_for_path(A,target_path):
-		B=A._make_request(_I,_N,{_O:target_path})
-		try:C=B[_C][_D][_P]
-		except KeyError:raise APIError(_Q)
-		return A.pow_solver.solve_challenge(C)
-	def create_chat_session(C):
-		B='chat_session'
-		try:
-			D=C._make_request(_I,'/chat_session/create',{'character_id':_A});A=D[_C][_D]
-			if B in A:return A[B]['id']
-			return A['id']
-		except KeyError:raise APIError('Invalid session creation response')
-	def upload_file(A,file_path,model_type=_R,thinking_enabled=_B):
-		H=file_path;import mimetypes as J;C=Path(H)
-		if not C.exists():raise FileNotFoundError(f"File not found: {H}")
-		I=C.stat().st_size;K=J.guess_type(str(C))[0]or'application/octet-stream';L=A._get_pow_for_path('/api/v0/file/upload_file');D=A._get_headers(L);D.pop(_L,_A);D['x-file-size']=str(I);D['x-model-type']=model_type;D['x-thinking-enabled']='1'if thinking_enabled else'0';M=f"{A.BASE_URL}/file/upload_file";A._log(f"UPLOAD   {C.name} ({I} bytes)")
-		try:
-			with open(C,'rb')as N:B=requests.post(M,headers=D,files={'file':(C.name,N,K)},cookies=A.cookies,timeout=120)
-		except requests.exceptions.RequestException as O:raise NetworkError(f"Upload network error: {O}")
-		A._log(f"UPLOAD   status={B.status_code}")
-		try:E=B.json();A._log(f"BODY     {json.dumps(E,indent=2)}")
-		except Exception:raise APIError('Upload failed: non-JSON response')
-		if B.status_code==401:raise AuthenticationError(_H)
-		elif B.status_code==429:raise RateLimitError('Rate limit exceeded during upload')
-		elif B.status_code!=200:raise APIError(f"Upload failed: {B.text}",B.status_code)
-		F=E.get(_C,{}).get(_D,{})
-		if F.get(_J)!='SUCCESS':raise APIError(f"Upload not successful: {F.get("error_code")} — {E}")
-		G=F.get('id')
-		if not G:raise APIError(f"No file id in upload response: {E}")
-		A._log(f"UPLOAD   file_id={G} tokens={F.get("token_usage")}");return G
-	def _stream_response(B,endpoint,json_data):
-		o='queries';n='search';m='APPEND';l='fragments';k='response';d=json_data;c='TOOL_SEARCH';W='results';V='response/fragments/-1/content';U='RESPONSE';T='response_message_id';R='thinking';N='THINK';M='text';D='type';C='content'
-		try:
-			p=B.pow_cache.get();e=B._get_headers(p);f=f"{B.BASE_URL}{endpoint}";B._log(f"REQUEST  POST {f}  (streaming)");B._log(f"HEADERS  {json.dumps(B._safe_headers(e),indent=2)}");B._log(f"BODY     {json.dumps(d,indent=2,ensure_ascii=_B)}");I=requests.post(f,headers=e,json=d,cookies=B.cookies,stream=True,timeout=_A);B._log(f"RESPONSE status={I.status_code} (stream started)")
-			if I.status_code!=200:
-				q=I.text;B._log(f"BODY     {q[:2000]}")
-				if I.status_code==401:raise AuthenticationError(_H)
-				elif I.status_code==429:raise RateLimitError(_M)
-				else:raise APIError(f"Request failed: {I.status_code}",I.status_code)
-			F=_A;g=_A;O=_A;J=_A
-			for G in I.iter_lines():
-				if not G:continue
-				if isinstance(G,bytes):G=G.decode(_E)
-				B._log(f"STREAM   {G}")
-				if G.startswith('event: '):O=G[7:];continue
-				if not G.startswith('data: '):continue
-				X=G[6:]
-				if not X or X=='[DONE]':continue
-				try:L=json.loads(X)
-				except json.JSONDecodeError:continue
-				if O=='ready'or T in L:
-					if T in L:g=L[T]
-					O=_A;continue
-				if O in('close','finish'):h={D:'meta',T:g,'finish_reason':'stop'};B._log(f"YIELD    {h}");yield h;return
-				O=_A;E=L.get('v');Y=L.get('p');Z=L.get('o')
-				if isinstance(E,dict)and k in E:
-					S=E[k]
-					if isinstance(S.get(C),str)and S[C]:F='response/content';J=U;A={D:M,C:S[C]};B._log(f"YIELD    {A}");yield A
-					for i in S.get(l,[]):
-						K=i.get(D);H=i.get(C)or''
-						if K==N and H:J=N;F=V;A={D:R,C:H};B._log(f"YIELD    {A}");yield A
-						elif K==U and H:J=U;F=V;A={D:M,C:H};B._log(f"YIELD    {A}");yield A
-						elif K==c:J=c
-					continue
-				if Y is not _A:
-					F=Y
-					if Z==m and isinstance(E,str):
-						if F and F.endswith(C):
-							if J==N:A={D:R,C:E}
-							else:A={D:M,C:E}
-							B._log(f"YIELD    {A}");yield A
-					elif Z=='SET':
-						if Y.endswith(W)and isinstance(E,list):A={D:n,W:E};B._log(f"YIELD    {A}");yield A
-					elif Z=='BATCH'and isinstance(E,list):
-						for a in E:
-							b=a.get('p');r=a.get('o');P=a.get('v')
-							if b==l and r==m and isinstance(P,list):
-								for Q in P:
-									K=Q.get(D);H=Q.get(C)or'';J=K
-									if K==N and H:F=V;A={D:R,C:H};B._log(f"YIELD    {A}");yield A
-									elif K==U and H:F=V;A={D:M,C:H};B._log(f"YIELD    {A}");yield A
-									elif K==c:s=Q.get(o)or[];A={D:n,_J:Q.get(_J,'WIP'),o:[A.get('query')for A in s],W:Q.get(W)or[]};B._log(f"YIELD    {A}");yield A
-							elif b and b.endswith(C)and isinstance(P,str):
-								if J==N:A={D:R,C:P}
-								else:A={D:M,C:P}
-								B._log(f"YIELD    {A}");yield A
-					continue
-				if isinstance(E,str)and F and F.endswith(C):
-					if J==N:A={D:R,C:E}
-					else:A={D:M,C:E}
-					B._log(f"YIELD    {A}");yield A
-		except requests.exceptions.RequestException as j:B._log(f"NETWORK ERROR during streaming: {j}");raise NetworkError(f"Network error during streaming: {str(j)}")
-	def chat_completion(B,chat_session_id,prompt,parent_message_id=_A,model_type=_R,thinking_enabled=_B,search_enabled=_B,ref_file_ids=_A):A=ref_file_ids;C={_S:chat_session_id,'parent_message_id':parent_message_id,'model_type':_A if A else model_type,_T:prompt,_U:A or[],_V:thinking_enabled,_W:search_enabled,_X:_A,'preempt':_B};return B._stream_response('/chat/completion',C)
-	def edit_message(A,chat_session_id,message_id,prompt,thinking_enabled=_B,search_enabled=_B):B={_S:chat_session_id,'message_id':message_id,_U:[],_T:prompt,_W:search_enabled,_V:thinking_enabled,_X:_A};return A._stream_response('/chat/edit_message',B)
+    BASE_URL = "https://chat.deepseek.com/api/v0"
+
+    def __init__(self, auth_token: str, debug: bool = False):
+        if not auth_token or not isinstance(auth_token, str):
+            raise AuthenticationError("Invalid auth token provided")
+
+        self.auth_token = auth_token
+        self.debug = debug
+        self.logger: Optional[logging.Logger] = None
+
+        if self.debug:
+            self._setup_logger()
+
+        self.cookies = {}
+        cookies_path = Path(__file__).parent / "cookies.json"
+
+        try:
+            with open(cookies_path, "r", encoding="utf-8") as f:
+                cookie_data = json.load(f)
+                self.cookies = cookie_data.get("cookies", {})
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+        self.pow_solver = DeepSeekPOW()
+
+        
+        self._session = self._build_session()
+
+        self.pow_cache = POWCache(self)
+
+        
+        self.pow_cache.warm()
+
+    def close(self) -> None:
+        
+        self._session.close()
+
+    def _build_session(self) -> requests.Session:
+        
+        session = requests.Session()
+
+        if Retry is not None:
+            retries = Retry(
+                connect=2,
+                read=0,
+                redirect=0,
+                status=0,
+                backoff_factor=0.05,
+            )
+        else:
+            retries = 0
+
+        adapter = HTTPAdapter(
+            pool_connections=100,
+            pool_maxsize=100,
+            pool_block=False,
+            max_retries=retries,
+        )
+
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+
+        session.headers.update(
+            {
+                "accept": "*/*",
+                "accept-language": "en-US,en;q=0.9",
+                "authorization": f"Bearer {self.auth_token}",
+                "origin": "https://chat.deepseek.com",
+                "referer": "https://chat.deepseek.com/",
+                "user-agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/132.0.0.0 Safari/537.36"
+                ),
+                "x-client-bundle-id": "com.deepseek.chat",
+                "x-client-locale": "en_US",
+                "x-client-platform": "web",
+                "x-client-version": "2.3.0",
+                "x-client-timezone-offset": "-14400",
+            }
+        )
+
+        if self.cookies:
+            session.cookies.update(self.cookies)
+
+        
+        
+        session.trust_env = False
+
+        return session
+
+    def _setup_logger(self) -> None:
+        self.logger = logging.getLogger("DeepSeekAPI")
+        self.logger.setLevel(logging.DEBUG)
+        self.logger.propagate = False
+
+        if not self.logger.handlers:
+            fh = logging.FileHandler("debug.txt", mode="a", encoding="utf-8")
+            formatter = logging.Formatter(
+                "%(asctime)s | %(levelname)-7s | %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+            fh.setFormatter(formatter)
+            self.logger.addHandler(fh)
+
+        self.logger.debug("=" * 60)
+        self.logger.debug("DeepSeekAPI logger started (debug=True)")
+
+    def _log(self, message: str) -> None:
+        if self.debug and self.logger:
+            self.logger.debug(message)
+
+    def _safe_headers(self, headers: Dict[str, str]) -> Dict[str, str]:
+        safe = dict(headers or {})
+
+        for key in list(safe.keys()):
+            lower = key.lower()
+
+            if lower == "authorization":
+                safe[key] = "Bearer [REDACTED]"
+            elif lower == "x-ds-pow-response":
+                safe[key] = "[REDACTED]"
+
+        return safe
+
+    def _json_bytes(self, data: Dict[str, Any]) -> bytes:
+        
+        if orjson is not None:
+            return orjson.dumps(data)
+
+        return json.dumps(data, ensure_ascii=False).encode("utf-8")
+
+    def _parse_json(self, response: requests.Response) -> Any:
+        
+        if orjson is not None:
+            return orjson.loads(response.content)
+
+        return response.json()
+
+    def _make_request(
+        self,
+        method: str,
+        endpoint: str,
+        json_data: Dict[str, Any],
+    ) -> Any:
+        url = f"{self.BASE_URL}{endpoint}"
+        body = self._json_bytes(json_data)
+
+        log = self.logger.debug if self.debug and self.logger else None
+
+        if log:
+            safe_headers = self._safe_headers(
+                {
+                    **self._session.headers,
+                    "content-type": "application/json",
+                }
+            )
+            log(f"REQUEST  {method} {url}")
+            log(f"HEADERS  {json.dumps(safe_headers, indent=2)}")
+            log(f"BODY     {body.decode('utf-8', 'replace')}")
+
+        try:
+            response = self._session.request(
+                method=method,
+                url=url,
+                data=body,
+                headers={"content-type": "application/json"},
+                timeout=(10, 30),
+            )
+        except requests.exceptions.RequestException as e:
+            if log:
+                log(f"NETWORK ERROR: {e}")
+            raise NetworkError(f"Network error: {str(e)}")
+
+        status = response.status_code
+
+        if log:
+            log(f"RESPONSE status={status}")
+
+        try:
+            parsed = self._parse_json(response)
+            if log:
+                log(f"BODY     {json.dumps(parsed, indent=2, ensure_ascii=False)}")
+        except Exception:
+            parsed = None
+            if log:
+                log(f"BODY     {response.text[:2000]}")
+
+        if status == 401:
+            raise AuthenticationError("Invalid or expired authentication token")
+
+        if status == 429:
+            raise RateLimitError("API rate limit exceeded")
+
+        if status >= 500:
+            raise APIError(f"Server error: {response.text}", status)
+
+        if status != 200:
+            raise APIError(f"Request failed: {response.text}", status)
+
+        if parsed is None:
+            raise APIError("Invalid non-JSON response", status)
+
+        return parsed
+
+    def _get_pow_challenge(self) -> Dict[str, Any]:
+        try:
+            response = self._make_request(
+                "POST",
+                "/chat/create_pow_challenge",
+                {"target_path": "/api/v0/chat/completion"},
+            )
+            return response["data"]["biz_data"]["challenge"]
+        except KeyError:
+            raise APIError("Invalid challenge response format")
+
+    def _get_pow_for_path(self, target_path: str) -> str:
+        response = self._make_request(
+            "POST",
+            "/chat/create_pow_challenge",
+            {"target_path": target_path},
+        )
+
+        try:
+            challenge = response["data"]["biz_data"]["challenge"]
+        except KeyError:
+            raise APIError("Invalid challenge response format")
+
+        return self.pow_solver.solve_challenge(challenge)
+
+    def create_chat_session(self) -> str:
+        try:
+            response = self._make_request(
+                "POST",
+                "/chat_session/create",
+                {"character_id": None},
+            )
+
+            biz_data = response["data"]["biz_data"]
+
+            if "chat_session" in biz_data:
+                return biz_data["chat_session"]["id"]
+
+            return biz_data["id"]
+        except KeyError:
+            raise APIError("Invalid session creation response")
+
+    def upload_file(
+        self,
+        file_path: str,
+        model_type: str = "default",
+        thinking_enabled: bool = False,
+    ) -> str:
+        path = Path(file_path)
+
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        file_size = path.stat().st_size
+        mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+
+        pow_response = self._get_pow_for_path("/api/v0/file/upload_file")
+
+        headers = {
+            "x-ds-pow-response": pow_response,
+            "x-file-size": str(file_size),
+            "x-model-type": model_type,
+            "x-thinking-enabled": "1" if thinking_enabled else "0",
+        }
+
+        url = f"{self.BASE_URL}/file/upload_file"
+
+        log = self.logger.debug if self.debug and self.logger else None
+
+        if log:
+            log(f"UPLOAD   {path.name} ({file_size} bytes)")
+
+        try:
+            with open(path, "rb") as f:
+                response = self._session.post(
+                    url,
+                    headers=headers,
+                    files={"file": (path.name, f, mime)},
+                    timeout=(10, 120),
+                )
+        except requests.exceptions.RequestException as e:
+            raise NetworkError(f"Upload network error: {e}")
+
+        status = response.status_code
+
+        if log:
+            log(f"UPLOAD   status={status}")
+
+        try:
+            body = self._parse_json(response)
+            if log:
+                log(f"BODY     {json.dumps(body, indent=2)}")
+        except Exception:
+            raise APIError(
+                f"Upload failed: non-JSON response (status={status}): {response.text[:500]}",
+                status,
+            )
+
+        if status == 401:
+            raise AuthenticationError("Invalid or expired authentication token")
+
+        if status == 429:
+            raise RateLimitError("Rate limit exceeded during upload")
+
+        if status != 200:
+            raise APIError(f"Upload failed: {response.text}", status)
+
+        biz = body.get("data", {}).get("biz_data", {})
+
+        if biz.get("status") != "SUCCESS":
+            raise APIError(f"Upload not successful: {biz.get('error_code')} — {body}")
+
+        file_id = biz.get("id")
+
+        if not file_id:
+            raise APIError(f"No file id in upload response: {body}")
+
+        if log:
+            log(f"UPLOAD   file_id={file_id} tokens={biz.get('token_usage')}")
+
+        return file_id
+
+    def _stream_response(
+        self,
+        endpoint: str,
+        json_data: Dict[str, Any],
+    ) -> Generator[Dict[str, Any], None, None]:
+        
+        pow_response = self.pow_cache.get()
+
+        url = f"{self.BASE_URL}{endpoint}"
+        body = self._json_bytes(json_data)
+
+        request_headers = {
+            "content-type": "application/json",
+            "x-ds-pow-response": pow_response,
+        }
+
+        log = self.logger.debug if self.debug and self.logger else None
+
+        if log:
+            safe_headers = self._safe_headers(
+                {
+                    **self._session.headers,
+                    **request_headers,
+                }
+            )
+            log(f"REQUEST  POST {url}  (streaming)")
+            log(f"HEADERS  {json.dumps(safe_headers, indent=2)}")
+            log(f"BODY     {body.decode('utf-8', 'replace')}")
+
+        try:
+            response = self._session.post(
+                url,
+                data=body,
+                headers=request_headers,
+                stream=True,
+                timeout=(10, None),
+            )
+
+            if log:
+                log(f"RESPONSE status={response.status_code} (stream started)")
+
+            if response.status_code != 200:
+                error_body = response.text
+                response.close()
+
+                if log:
+                    log(f"BODY     {error_body[:2000]}")
+
+                status = response.status_code
+
+                if status == 401:
+                    raise AuthenticationError(
+                        "Invalid or expired authentication token"
+                    )
+
+                if status == 429:
+                    raise RateLimitError("API rate limit exceeded")
+
+                raise APIError(f"Request failed: {status}", status)
+
+            
+            active_path: Optional[str] = None
+            response_message_id: Optional[int] = None
+            event_type: Optional[str] = None
+            current_fragment_type: Optional[str] = None
+
+            loads = orjson.loads if orjson is not None else json.loads
+
+            EVENT_PREFIX = b"event: "
+            DATA_PREFIX = b"data: "
+            DONE = b"[DONE]"
+
+            for raw in response.iter_lines(decode_unicode=False):
+                if not raw:
+                    continue
+
+                if raw.startswith(EVENT_PREFIX):
+                    event_type = raw[len(EVENT_PREFIX) :].decode("utf-8", "ignore")
+                    continue
+
+                if not raw.startswith(DATA_PREFIX):
+                    continue
+
+                payload = raw[len(DATA_PREFIX) :]
+
+                if not payload or payload == DONE:
+                    continue
+
+                if log:
+                    log(f"STREAM   {raw.decode('utf-8', 'replace')}")
+
+                try:
+                    obj = loads(payload)
+                except Exception:
+                    continue
+
+                if not isinstance(obj, dict):
+                    continue
+
+                
+                if event_type == "ready" or "response_message_id" in obj:
+                    if "response_message_id" in obj:
+                        response_message_id = obj["response_message_id"]
+
+                    event_type = None
+                    continue
+
+                
+                if event_type in ("close", "finish"):
+                    meta = {
+                        "type": "meta",
+                        "response_message_id": response_message_id,
+                        "finish_reason": "stop",
+                    }
+
+                    if log:
+                        log(f"YIELD    {meta}")
+
+                    yield meta
+                    return
+
+                event_type = None
+
+                v = obj.get("v")
+                p = obj.get("p")
+                o = obj.get("o")
+
+                
+                
+                
+                if isinstance(v, dict) and "response" in v:
+                    resp = v["response"]
+
+                    
+                    content = resp.get("content")
+
+                    if isinstance(content, str) and content:
+                        active_path = "response/content"
+                        current_fragment_type = "RESPONSE"
+
+                        chunk = {
+                            "type": "text",
+                            "content": content,
+                        }
+
+                        if log:
+                            log(f"YIELD    {chunk}")
+
+                        yield chunk
+
+                    
+                    fragments = resp.get("fragments") or []
+
+                    for frag in fragments:
+                        ftype = frag.get("type")
+                        fcontent = frag.get("content") or ""
+
+                        if ftype == "THINK" and fcontent:
+                            current_fragment_type = "THINK"
+                            active_path = "response/fragments/-1/content"
+
+                            chunk = {
+                                "type": "thinking",
+                                "content": fcontent,
+                            }
+
+                            if log:
+                                log(f"YIELD    {chunk}")
+
+                            yield chunk
+
+                        elif ftype == "RESPONSE" and fcontent:
+                            current_fragment_type = "RESPONSE"
+                            active_path = "response/fragments/-1/content"
+
+                            chunk = {
+                                "type": "text",
+                                "content": fcontent,
+                            }
+
+                            if log:
+                                log(f"YIELD    {chunk}")
+
+                            yield chunk
+
+                        elif ftype == "TOOL_SEARCH":
+                            current_fragment_type = "TOOL_SEARCH"
+
+                    continue
+
+                
+                
+                
+                if p is not None:
+                    active_path = p
+
+                    if o == "APPEND" and isinstance(v, str):
+                        if active_path and active_path.endswith("content"):
+                            chunk = {
+                                "type": (
+                                    "thinking"
+                                    if current_fragment_type == "THINK"
+                                    else "text"
+                                ),
+                                "content": v,
+                            }
+
+                            if log:
+                                log(f"YIELD    {chunk}")
+
+                            yield chunk
+
+                    elif o == "SET":
+                        if p.endswith("results") and isinstance(v, list):
+                            chunk = {
+                                "type": "search",
+                                "results": v,
+                            }
+
+                            if log:
+                                log(f"YIELD    {chunk}")
+
+                            yield chunk
+
+                    elif o == "BATCH" and isinstance(v, list):
+                        for item in v:
+                            ip = item.get("p")
+                            io = item.get("o")
+                            iv = item.get("v")
+
+                            if (
+                                ip == "fragments"
+                                and io == "APPEND"
+                                and isinstance(iv, list)
+                            ):
+                                for new_frag in iv:
+                                    ftype = new_frag.get("type")
+                                    fcontent = new_frag.get("content") or ""
+
+                                    current_fragment_type = ftype
+
+                                    if ftype == "THINK" and fcontent:
+                                        active_path = "response/fragments/-1/content"
+
+                                        chunk = {
+                                            "type": "thinking",
+                                            "content": fcontent,
+                                        }
+
+                                        if log:
+                                            log(f"YIELD    {chunk}")
+
+                                        yield chunk
+
+                                    elif ftype == "RESPONSE" and fcontent:
+                                        active_path = "response/fragments/-1/content"
+
+                                        chunk = {
+                                            "type": "text",
+                                            "content": fcontent,
+                                        }
+
+                                        if log:
+                                            log(f"YIELD    {chunk}")
+
+                                        yield chunk
+
+                                    elif ftype == "TOOL_SEARCH":
+                                        queries = new_frag.get("queries") or []
+
+                                        chunk = {
+                                            "type": "search",
+                                            "status": new_frag.get("status", "WIP"),
+                                            "queries": [
+                                                q.get("query")
+                                                if isinstance(q, dict)
+                                                else q
+                                                for q in queries
+                                            ],
+                                            "results": new_frag.get("results") or [],
+                                        }
+
+                                        if log:
+                                            log(f"YIELD    {chunk}")
+
+                                        yield chunk
+
+                            elif (
+                                ip
+                                and ip.endswith("content")
+                                and isinstance(iv, str)
+                            ):
+                                chunk = {
+                                    "type": (
+                                        "thinking"
+                                        if current_fragment_type == "THINK"
+                                        else "text"
+                                    ),
+                                    "content": iv,
+                                }
+
+                                if log:
+                                    log(f"YIELD    {chunk}")
+
+                                yield chunk
+
+                    continue
+
+                
+                
+                
+                if (
+                    isinstance(v, str)
+                    and active_path
+                    and active_path.endswith("content")
+                ):
+                    chunk = {
+                        "type": (
+                            "thinking"
+                            if current_fragment_type == "THINK"
+                            else "text"
+                        ),
+                        "content": v,
+                    }
+
+                    if log:
+                        log(f"YIELD    {chunk}")
+
+                    yield chunk
+
+        except requests.exceptions.RequestException as e:
+            if log:
+                log(f"NETWORK ERROR during streaming: {e}")
+
+            raise NetworkError(f"Network error during streaming: {str(e)}")
+
+    def chat_completion(
+        self,
+        chat_session_id: str,
+        prompt: str,
+        parent_message_id: Optional[int] = None,
+        model_type: str = "default",
+        thinking_enabled: bool = False,
+        search_enabled: bool = False,
+        ref_file_ids: Optional[List[str]] = None,
+    ) -> Generator[Dict[str, Any], None, None]:
+        payload = {
+            "chat_session_id": chat_session_id,
+            "parent_message_id": parent_message_id,
+            "model_type": None if ref_file_ids else model_type,
+            "prompt": prompt,
+            "ref_file_ids": ref_file_ids or [],
+            "thinking_enabled": thinking_enabled,
+            "search_enabled": search_enabled,
+            "action": None,
+            "preempt": False,
+        }
+
+        return self._stream_response("/chat/completion", payload)
+
+    def edit_message(
+        self,
+        chat_session_id: str,
+        message_id: int,
+        prompt: str,
+        thinking_enabled: bool = False,
+        search_enabled: bool = False,
+    ) -> Generator[Dict[str, Any], None, None]:
+        payload = {
+            "chat_session_id": chat_session_id,
+            "message_id": message_id,
+            "ref_file_ids": [],
+            "prompt": prompt,
+            "search_enabled": search_enabled,
+            "thinking_enabled": thinking_enabled,
+            "action": None,
+        }
+
+        return self._stream_response("/chat/edit_message", payload)

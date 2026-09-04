@@ -1,127 +1,425 @@
 from __future__ import annotations
-_Y='skill_diff'
-_X='skill_rollback'
-_W='skill_write'
-_V='skill_read'
-_U='skills_list'
-_T='mcp_read_plugin'
-_S='deepseek_upload_file'
-_R='mcp_help'
-_Q='server'
-_P='env'
-_O=False
-_N='content'
-_M='\n'
-_L='input_schema'
-_K=None
-_J='args'
-_I='command'
-_H='mcpServers'
-_G='properties'
-_F='arguments:'
-_E='required'
-_D='example:'
-_C='type'
-_B='description'
-_A='name'
-import asyncio,json,re,sys,traceback
+
+import asyncio
+import json
+import re
+import sys
+import traceback
 from pathlib import Path
-from typing import Any,Dict,List,Optional
-from.config import load_mcp_config,save_mcp_config
-from.ui import console
-try:from mcp import ClientSession,StdioServerParameters;from mcp.client.stdio import stdio_client;MCP_AVAILABLE=True
-except ImportError:MCP_AVAILABLE=_O
-TOOL_CALL_RE=re.compile('\\[TOOL_CALL:\\s*([A-Za-z0-9_.\\-]+)\\s*\\]\\s*(\\{.*?\\})?\\s*\\[/TOOL_CALL\\]',re.DOTALL)
-def parse_tool_calls(text):
-	E='_raw';C=[]
-	for D in TOOL_CALL_RE.finditer(text or''):
-		F=D.group(1).strip();B=(D.group(2)or'{}').strip()
-		try:
-			A=json.loads(B)
-			if not isinstance(A,dict):A={E:B}
-		except json.JSONDecodeError:A={E:B}
-		C.append({_A:F,'arguments':A})
-	return C
+from typing import Any, Dict, List, Optional
+
+from .config import load_mcp_config, save_mcp_config
+from .dependencies import ensure_dependencies
+from .ui import console
+
+
+
+
+try:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    MCP_AVAILABLE = True
+except ImportError:
+    MCP_AVAILABLE = False
+
+
+
+
+TOOL_CALL_RE = re.compile(
+    r"\[TOOL_CALL:\s*([A-Za-z0-9_.\-]+)\s*\]\s*(\{.*?\})?\s*\[/TOOL_CALL\]",
+    re.DOTALL,
+)
+
+
+def parse_tool_calls(text: str) -> List[Dict[str, Any]]:
+    calls = []
+    for m in TOOL_CALL_RE.finditer(text or ""):
+        name = m.group(1).strip()
+        raw_args = (m.group(2) or "{}").strip()
+        try:
+            args = json.loads(raw_args)
+            if not isinstance(args, dict):
+                args = {"_raw": raw_args}
+        except json.JSONDecodeError:
+            args = {"_raw": raw_args}
+        calls.append({"name": name, "arguments": args})
+    return calls
+
+
+
+
+
 class MCPManager:
-	BUILTIN_TOOL_NAMES=[_R,_S,_T,_U,_V,_W,_X,_Y]
-	def __init__(A):A.tools=[];A.tool_index={};A.config=load_mcp_config()
-	def list_servers(A):return A.config.get(_H,{})
-	def add_server(A,name,command,args=_K,env=_K):A.config.setdefault(_H,{})[name]={_I:command,_J:args or[],_P:env or{}};save_mcp_config(A.config)
-	def remove_server(A,name):
-		if name in A.config.get(_H,{}):del A.config[_H][name];save_mcp_config(A.config);return True
-		return _O
-	def get_plugin_path(D,name):
-		A=D.config.get(_H,{}).get(name)
-		if not A:return
-		E=A.get(_I,'');C=A.get(_J,[])or[]
-		if E==sys.executable and C:
-			B=Path(C[0])
-			if B.exists()and B.suffix=='.py':return B
-	async def _load_tools_from_server(J,name,server_cfg):
-		A=server_cfg
-		if not MCP_AVAILABLE:return[]
-		E=StdioServerParameters(command=A[_I],args=A.get(_J,[]),env=A.get(_P)or _K);C=[]
-		try:
-			async with stdio_client(E)as(F,G):
-				async with ClientSession(F,G)as D:
-					await D.initialize();H=await D.list_tools()
-					for B in H.tools:C.append({_Q:name,_A:B.name,_B:(B.description or'').strip(),_L:getattr(B,'inputSchema',{})or{}})
-		except Exception as I:console.print(f"[warning]MCP server '{name}' failed: {I}[/]");traceback.print_exc()
-		return C
-	async def refresh_tools(A):
-		A.tools=[];A.tool_index={}
-		for(B,D)in A.list_servers().items():
-			for C in await A._load_tools_from_server(B,D):A.tools.append(C);A.tool_index[C[_A]]=B
-		return A.tools
-	async def call_tool(C,tool_name,arguments):
-		I='text';A=tool_name;D=C.tool_index.get(A)
-		if D is _K:raise KeyError(f"Unknown tool '{A}'")
-		B=C.config[_H][D];J=StdioServerParameters(command=B[_I],args=B.get(_J,[]),env=B.get(_P)or _K)
-		async with stdio_client(J)as(K,L):
-			async with ClientSession(K,L)as E:
-				await E.initialize();F=await E.call_tool(A,arguments);G=[]
-				for H in getattr(F,_N,[])or[]:
-					if getattr(H,_C,'')==I:G.append(getattr(H,I,''))
-				return _M.join(A for A in G if A)or str(getattr(F,_N,''))
-	@staticmethod
-	def _schema_lines(schema):
-		A=schema;E=(A or{}).get(_G,{})or{};F=set((A or{}).get(_E,[])or[]);B=[]
-		for(C,D)in E.items():G=D.get(_C,'any');H=D.get(_B,'');I=', required'if C in F else'';B.append(f"    • {C} ({G}{I}): {H}")
-		return B or['    (no arguments)']
-	@staticmethod
-	def _example_call(name,schema):A=(schema or{}).get(_E,[])or[];B={A:'…'for A in A};return f"[TOOL_CALL: {name}]\n{json.dumps(B,ensure_ascii=_O)}\n[/TOOL_CALL]"
-	def _builtin_reference(A):N='version_b';M='version_a';L='version';K='path';D='integer';C='Skill name.';B='string';E={_G:{K:{_C:B,_B:'Absolute or ~ path to a local file to upload.'}},_E:[K]};F={_G:{_A:{_C:B,_B:'Name of a Python-based MCP plugin to read.'}},_E:[_A]};G={_G:{_A:{_C:B,_B:C},_N:{_C:B,_B:'Full skill content (markdown).'},_B:{_C:B,_B:'One-line description.'},'note':{_C:B,_B:'Version note.'}},_E:[_A,_N]};H={_G:{_A:{_C:B,_B:C}},_E:[_A]};I={_G:{_A:{_C:B,_B:C},L:{_C:D,_B:'Version number to re-activate.'}},_E:[_A,L]};J={_G:{_A:{_C:B,_B:C},M:{_C:D,_B:'First version.'},N:{_C:D,_B:'Second version.'}},_E:[_A,M,N]};O='Ask the user structured multi-question forms with the [QUESTIONS]{json}[/QUESTIONS] block (see the agent protocol) — not a tool.';P=['## Built-in','','### mcp_help','Shows this reference: every MCP tool, its argument schema, and server commands.','Example:',A._example_call(_R,{}),'','### deepseek_upload_file',"Uploads a local file from the user's machine using DeepSeekAPI.upload_file. The returned file id is attached to the next completion request.",_F,*A._schema_lines(E),_D,A._example_call(_S,E),'','### mcp_read_plugin',"Reads the FULL numbered source of an existing Python MCP plugin. ALWAYS call this before proposing an [MCP_EDIT_PROPOSAL], then send only a minimal unified diff in the 'patch' field.",_F,*A._schema_lines(F),_D,A._example_call(_T,F),'','### skills_list','Lists every skill in the library (name, active version, description).',_D,A._example_call(_U,{}),'','### skill_read','Reads the ACTIVE version of a skill. Read the relevant skill BEFORE a matching task.',_F,*A._schema_lines(H),_D,A._example_call(_V,H),'','### skill_write','Creates a skill or appends a new version. Use it after finishing a task where a skill would have helped — self-improve for next time.',_F,*A._schema_lines(G),_D,A._example_call(_W,G),'','### skill_rollback','Re-activates an older version of a skill when a newer version made things worse.',_F,*A._schema_lines(I),_D,A._example_call(_X,I),'','### skill_diff','Shows a unified diff between two versions of a skill.',_F,*A._schema_lines(J),_D,A._example_call(_Y,J),'',f"note: {O}",''];return P
-	def get_short_block(A):B=', '.join([A[_A]for A in A.tools]+A.BUILTIN_TOOL_NAMES);return f'''# TOOL USE
-You have MCP tools available. To call one, output exactly this block in your response and wait for the result:
-[TOOL_CALL: <tool_name>]
-{{"argument": "value"}}
-[/TOOL_CALL]
-Available tools: {B}.
-Arguments must be valid JSON. One tool call per response.
-For the full reference, call the built-in tool "mcp_help" with empty arguments {{}}.'''
-	def _help_header_lines(A):return['# MCP TOOL REFERENCE','','To use a tool, output exactly one block per response and wait for its result:','','[TOOL_CALL: <tool_name>]','{"argument": "value"}','[/TOOL_CALL]','','Rules:','- Arguments must be valid JSON matching the schema below.','- Do not repeat an identical call unless the previous one failed.','- The built-in tool "mcp_help" (arguments {}) re-displays this reference.','- The built-in tool "deepseek_upload_file" uploads a local file and attaches it to the next request.','- Before editing an MCP plugin, call "mcp_read_plugin" and propose a minimal unified diff.','',*A._builtin_reference()]
-	def get_help_block(C):
-		A=C._help_header_lines()
-		if not C.tools:A.append('(No external MCP servers configured. Use /settings → MCP to add one.)');return _M.join(A)
-		D={}
-		for B in C.tools:D.setdefault(B[_Q],[]).append(B)
-		for(E,G)in D.items():
-			F=C.list_servers().get(E,{});H=F.get(_I,'?');I=' '.join(F.get(_J,[])or[]);A.append(f"## MCP server: {E}");A.append(f"command: `{H} {I}`".rstrip());A.append('')
-			for B in G:
-				A.append(f"### {B[_A]}")
-				if B[_B]:A.append(B[_B])
-				A.append(_F);A.extend(C._schema_lines(B[_L]));A.append(_D);A.append(C._example_call(B[_A],B[_L]));A.append('')
-		return _M.join(A)
-	def get_help_block_for_tools(C,tool_names):
-		A=C._help_header_lines();D=[A for A in C.tools if A[_A]in tool_names]
-		if not D:A.append('(No matching external MCP tools found.)');return _M.join(A)
-		E={}
-		for B in D:E.setdefault(B[_Q],[]).append(B)
-		for(F,H)in E.items():
-			G=C.list_servers().get(F,{});I=G.get(_I,'?');J=' '.join(G.get(_J,[])or[]);A.append(f"## MCP server: {F}");A.append(f"command: `{I} {J}`".rstrip());A.append('')
-			for B in H:
-				A.append(f"### {B[_A]}")
-				if B[_B]:A.append(B[_B])
-				A.append(_F);A.extend(C._schema_lines(B[_L]));A.append(_D);A.append(C._example_call(B[_A],B[_L]));A.append('')
-		return _M.join(A)
-	def get_full_block(A):return A.get_help_block()
+    
+    BUILTIN_TOOL_NAMES = [
+        "mcp_help",
+        "deepseek_upload_file",
+        "mcp_read_plugin",
+        "skills_list",
+        "skill_read",
+        "skill_write",
+        "skill_rollback",
+        "skill_diff",
+    ]
+
+    def __init__(self) -> None:
+        self.tools: List[Dict[str, Any]] = []
+        self.tool_index: Dict[str, str] = {}  
+        self.config = load_mcp_config()
+
+    
+    def list_servers(self) -> Dict[str, Dict[str, Any]]:
+        return self.config.get("mcpServers", {})
+
+    def add_server(
+        self,
+        name: str,
+        command: str,
+        args: Optional[List[str]] = None,
+        env: Optional[Dict[str, str]] = None,
+        dependencies: Optional[List[str]] = None,
+    ) -> None:
+        self.config.setdefault("mcpServers", {})[name] = {
+            "command": command,
+            "args": args or [],
+            "env": env or {},
+            "dependencies": [d for d in (dependencies or []) if (d or "").strip()],
+        }
+        save_mcp_config(self.config)
+
+    def set_dependencies(self, name: str, dependencies: List[str]) -> bool:
+        if name not in self.config.get("mcpServers", {}):
+            return False
+        self.config["mcpServers"][name]["dependencies"] = list(dependencies)
+        save_mcp_config(self.config)
+        return True
+
+    def remove_server(self, name: str) -> bool:
+        if name in self.config.get("mcpServers", {}):
+            del self.config["mcpServers"][name]
+            save_mcp_config(self.config)
+            return True
+        return False
+
+    def get_plugin_path(self, name: str) -> Optional[Path]:
+        
+        cfg = self.config.get("mcpServers", {}).get(name)
+        if not cfg:
+            return None
+        cmd = cfg.get("command", "")
+        args = cfg.get("args", []) or []
+        if cmd == sys.executable and args:
+            p = Path(args[0])
+            if p.exists() and p.suffix == ".py":
+                return p
+        return None
+
+    
+    def _ensure_server_deps(self, server_cfg: Dict[str, Any]) -> None:
+        deps = server_cfg.get("dependencies") or []
+        if deps:
+            ensure_dependencies(deps, console)
+
+    
+    async def _load_tools_from_server(
+        self,
+        name: str,
+        server_cfg: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        
+        if not MCP_AVAILABLE:
+            return []
+        self._ensure_server_deps(server_cfg)
+        params = StdioServerParameters(
+            command=server_cfg["command"],
+            args=server_cfg.get("args", []),
+            env=server_cfg.get("env") or None,
+        )
+        tools: List[Dict[str, Any]] = []
+        try:
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.list_tools()
+                    for tool in result.tools:
+                        tools.append({
+                            "server": name,
+                            "name": tool.name,
+                            "description": (tool.description or "").strip(),
+                            "input_schema": getattr(tool, "inputSchema", {}) or {},
+                        })
+        except Exception as e:
+            console.print(f"[warning]MCP server '{name}' failed: {e}[/]")
+            traceback.print_exc()
+        return tools
+
+    async def refresh_tools(self) -> List[Dict[str, Any]]:
+        self.tools = []
+        self.tool_index = {}
+        for name, cfg in self.list_servers().items():
+            for t in await self._load_tools_from_server(name, cfg):
+                self.tools.append(t)
+                self.tool_index[t["name"]] = name
+        return self.tools
+
+    
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+        server_name = self.tool_index.get(tool_name)
+        if server_name is None:
+            raise KeyError(f"Unknown tool '{tool_name}'")
+        cfg = self.config["mcpServers"][server_name]
+        self._ensure_server_deps(cfg)
+        
+        params = StdioServerParameters(
+            command=cfg["command"],
+            args=cfg.get("args", []),
+            env=cfg.get("env") or None,
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, arguments)
+                texts = []
+                for c in getattr(result, "content", []) or []:
+                    if getattr(c, "type", "") == "text":
+                        texts.append(getattr(c, "text", ""))
+                return "\n".join(t for t in texts if t) or str(getattr(result, "content", ""))
+
+    
+    @staticmethod
+    def _schema_lines(schema: Dict[str, Any]) -> List[str]:
+        props = (schema or {}).get("properties", {}) or {}
+        required = set((schema or {}).get("required", []) or [])
+        lines = []
+        for pname, pdef in props.items():
+            typ = pdef.get("type", "any")
+            desc = pdef.get("description", "")
+            flag = ", required" if pname in required else ""
+            lines.append(f"    • {pname} ({typ}{flag}): {desc}")
+        return lines or ["    (no arguments)"]
+
+    @staticmethod
+    def _example_call(name: str, schema: Dict[str, Any]) -> str:
+        required = (schema or {}).get("required", []) or []
+        example = {p: "…" for p in required}
+        return (
+            f"[TOOL_CALL: {name}]\n"
+            f"{json.dumps(example, ensure_ascii=False)}\n"
+            f"[/TOOL_CALL]"
+        )
+
+    def _builtin_reference(self) -> List[str]:
+        upload_schema = {
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or ~ path to a local file to upload.",
+                }
+            },
+            "required": ["path"],
+        }
+        read_plugin_schema = {
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of a Python-based MCP plugin to read.",
+                }
+            },
+            "required": ["name"],
+        }
+        skill_write_schema = {
+            "properties": {
+                "name": {"type": "string", "description": "Skill name."},
+                "content": {"type": "string", "description": "Full skill content (markdown)."},
+                "description": {"type": "string", "description": "One-line description."},
+                "note": {"type": "string", "description": "Version note."},
+            },
+            "required": ["name", "content"],
+        }
+        skill_name_schema = {
+            "properties": {"name": {"type": "string", "description": "Skill name."}},
+            "required": ["name"],
+        }
+        skill_rollback_schema = {
+            "properties": {
+                "name": {"type": "string", "description": "Skill name."},
+                "version": {"type": "integer", "description": "Version number to re-activate."},
+            },
+            "required": ["name", "version"],
+        }
+        skill_diff_schema = {
+            "properties": {
+                "name": {"type": "string", "description": "Skill name."},
+                "version_a": {"type": "integer", "description": "First version."},
+                "version_b": {"type": "integer", "description": "Second version."},
+            },
+            "required": ["name", "version_a", "version_b"],
+        }
+        questions_note = (
+            "Ask the user structured multi-question forms with the [QUESTIONS]{json}[/QUESTIONS] "
+            "block (see the APS guide) — it is optional, only for clean structured input."
+        )
+        lines = [
+            "## Built-in",
+            "",
+            "Note: external MCP servers run in ephemeral mode (process starts and stops per call).",
+            "",
+            "### mcp_help",
+            "Shows this reference: every MCP tool, its argument schema, and server commands.",
+            "Example:",
+            self._example_call("mcp_help", {}),
+            "",
+            "### deepseek_upload_file",
+            "Uploads a local file from the user's machine (DeepSeek provider only). "
+            "The returned file id is attached to the next completion request.",
+            "arguments:",
+            *self._schema_lines(upload_schema),
+            "example:",
+            self._example_call("deepseek_upload_file", upload_schema),
+            "",
+            "### mcp_read_plugin",
+            "Reads the FULL numbered source of an existing Python MCP plugin. ALWAYS call this "
+            "before proposing an [MCP_EDIT_PROPOSAL], then send only a minimal unified diff "
+            "in the 'patch' field.",
+            "arguments:",
+            *self._schema_lines(read_plugin_schema),
+            "example:",
+            self._example_call("mcp_read_plugin", read_plugin_schema),
+            "",
+            "### skills_list",
+            "Lists every skill in the library (name, active version, description).",
+            "example:",
+            self._example_call("skills_list", {}),
+            "",
+            "### skill_read",
+            "Reads the ACTIVE version of a skill. Read the relevant skill BEFORE a matching task.",
+            "arguments:",
+            *self._schema_lines(skill_name_schema),
+            "example:",
+            self._example_call("skill_read", skill_name_schema),
+            "",
+            "### skill_write",
+            "Creates a skill or appends a new version. Use it after finishing a task where a "
+            "skill would have helped — self-improve for next time.",
+            "arguments:",
+            *self._schema_lines(skill_write_schema),
+            "example:",
+            self._example_call("skill_write", skill_write_schema),
+            "",
+            "### skill_rollback",
+            "Re-activates an older version of a skill when a newer version made things worse.",
+            "arguments:",
+            *self._schema_lines(skill_rollback_schema),
+            "example:",
+            self._example_call("skill_rollback", skill_rollback_schema),
+            "",
+            "### skill_diff",
+            "Shows a unified diff between two versions of a skill.",
+            "arguments:",
+            *self._schema_lines(skill_diff_schema),
+            "example:",
+            self._example_call("skill_diff", skill_diff_schema),
+            "",
+            f"note: {questions_note}",
+            "",
+        ]
+        return lines
+
+    def get_short_block(self) -> str:
+        
+        names = ", ".join(
+            [t["name"] for t in self.tools] + self.BUILTIN_TOOL_NAMES
+        )
+        return (
+            "# TOOL USE\n"
+            "You have MCP tools available. To call one, output exactly this block "
+            "in your response and wait for the result:\n"
+            "[TOOL_CALL: <tool_name>]\n"
+            '{"argument": "value"}\n'
+            "[/TOOL_CALL]\n"
+            f"Available tools: {names}.\n"
+            "Arguments must be valid JSON. One tool call per response.\n"
+            "Each server runs in ephemeral mode (process starts and stops per call). "
+            "Call mcp_help for the full reference."
+        )
+
+    def _help_header_lines(self) -> List[str]:
+        return [
+            "# MCP TOOL REFERENCE",
+            "",
+            "To use a tool, output exactly one block per response and wait for its result:",
+            "",
+            "[TOOL_CALL: <tool_name>]",
+            '{"argument": "value"}',
+            "[/TOOL_CALL]",
+            "",
+            "Rules:",
+            "- Arguments must be valid JSON matching the schema below.",
+            "- Do not repeat an identical call unless the previous one failed.",
+            '- The built-in tool "mcp_help" (arguments {}) re-displays this reference.',
+            '- The built-in tool "deepseek_upload_file" uploads a local file and attaches it to the next request.',
+            '- Before editing an MCP plugin, call "mcp_read_plugin" and propose a minimal unified diff.',
+            "",
+            *self._builtin_reference(),
+        ]
+
+    def get_help_block(self) -> str:
+        
+        lines = self._help_header_lines()
+        if not self.tools:
+            lines.append("(No external MCP tools loaded. Use /mcp refresh.)")
+            return "\n".join(lines)
+        by_server: Dict[str, List[Dict[str, Any]]] = {}
+        for t in self.tools:
+            by_server.setdefault(t["server"], []).append(t)
+        for server, tools in by_server.items():
+            cfg = self.list_servers().get(server, {})
+            cmd = cfg.get("command", "?")
+            args = " ".join(cfg.get("args", []) or [])
+            deps = ", ".join(cfg.get("dependencies") or []) or "none"
+            lines.append(f"## MCP server: {server}")
+            lines.append(f"command: `{cmd} {args}`".rstrip())
+            lines.append(f"dependencies: {deps}")
+            lines.append("")
+            for t in tools:
+                lines.append(f"### {t['name']}")
+                if t["description"]:
+                    lines.append(t["description"])
+                lines.append("arguments:")
+                lines.extend(self._schema_lines(t["input_schema"]))
+                lines.append("example:")
+                lines.append(self._example_call(t["name"], t["input_schema"]))
+                lines.append("")
+        return "\n".join(lines)
+
+    def get_help_block_for_tools(self, tool_names: List[str]) -> str:
+        
+        lines = self._help_header_lines()
+        filtered_tools = [t for t in self.tools if t["name"] in tool_names]
+        if not filtered_tools:
+            lines.append("(No matching external MCP tools found.)")
+            return "\n".join(lines)
+        by_server: Dict[str, List[Dict[str, Any]]] = {}
+        for t in filtered_tools:
+            by_server.setdefault(t["server"], []).append(t)
+        for server, tools in by_server.items():
+            cfg = self.list_servers().get(server, {})
+            cmd = cfg.get("command", "?")
+            args = " ".join(cfg.get("args", []) or [])
+            lines.append(f"## MCP server: {server}")
+            lines.append(f"command: `{cmd} {args}`".rstrip())
+            lines.append("")
+            for t in tools:
+                lines.append(f"### {t['name']}")
+                if t["description"]:
+                    lines.append(t["description"])
+                lines.append("arguments:")
+                lines.extend(self._schema_lines(t["input_schema"]))
+                lines.append("example:")
+                lines.append(self._example_call(t["name"], t["input_schema"]))
+                lines.append("")
+        return "\n".join(lines)
+
+    def get_full_block(self) -> str:
+        
+        return self.get_help_block()
