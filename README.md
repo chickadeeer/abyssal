@@ -1,6 +1,6 @@
 # Abyssal
 
-> **The Most Unique DeepSeek Client.**
+> **The Most Unique Terminal Client.**
 
 A terminal client for [chat.deepseek.com](https://chat.deepseek.com) that uses a reverse-engineered web API. No official API key needed — Abyssal talks to DeepSeek the same way the web app does. Works with DeepSeek V4, V4 Pro, and VL2.
 
